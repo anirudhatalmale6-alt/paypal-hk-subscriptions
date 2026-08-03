@@ -193,7 +193,8 @@ async function pay() {
     var fin = await finRes.json();
     if (!finRes.ok || fin.error) throw new Error(fin.message || fin.error || 'Payment failed');
 
-    show('ok', 'Subscription active! ' + fin.subscription_id + ' — trial €2.90 charged, then €49.50/mo from ' + (fin.next_billing || '').slice(0, 10) + '.');
+    show('ok', 'Subscription active! ' + fin.subscription_id + ' — trial €2.90 charged, then €49.50/mo from ' + (fin.next_billing || '').slice(0, 10) + '.'
+      + (fin.paypal_capture_id ? ' PayPal transaction: ' + fin.paypal_capture_id : ''));
     btn.innerHTML = 'Subscribed';
   } catch (e) {
     btn.disabled = false;

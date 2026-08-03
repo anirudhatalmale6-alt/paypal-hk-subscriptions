@@ -169,11 +169,16 @@ try {
                 break;
             }
             echo json_encode([
-                'subscription_id' => $subId,
-                'status'          => 'active',
-                'trial_charged'   => $TRIAL_AMOUNT . ' ' . $CURRENCY,
-                'next_billing'    => $sub['next_billing_at'],
-                'monthly'         => $MONTHLY_AMOUNT . ' ' . $CURRENCY,
+                'subscription_id'   => $subId,          // OUR internal record id
+                'status'            => 'active',
+                'trial_charged'     => $TRIAL_AMOUNT . ' ' . $CURRENCY,
+                'next_billing'      => $sub['next_billing_at'],
+                'monthly'           => $MONTHLY_AMOUNT . ' ' . $CURRENCY,
+                // PayPal-side references so the payment can be found in the
+                // dashboard / via API (this is the real transaction, not sub_*).
+                'paypal_capture_id' => $charge['capture_id'],
+                'paypal_order_id'   => $charge['order_id'],
+                'vault_id'          => $vaultId,
             ]);
             break;
 
