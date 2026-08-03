@@ -102,6 +102,58 @@ class Store
         return $n;
     }
 
+    /** Find the subscription that owns a given capture id (any of its charges). */
+    public function findByCaptureId(string $captureId): ?array
+    {
+        if ($captureId === '') return null;
+        foreach ($this->read()['subscriptions'] as $s) {
+            foreach (($s['charges'] ?? []) as $c) {
+                if (($c['capture_id'] ?? null) === $captureId) return $s;
+            }
+        }
+        return null;
+    }
+
+    /** Find the subscription billing a given vault (stored card) id. */
+    public function findByVaultId(string $vaultId): ?array
+    {
+        if ($vaultId === '') return null;
+        foreach ($this->read()['subscriptions'] as $s) {
+            if (($s['vault_id'] ?? null) === $vaultId) return $s;
+        }
+        return null;
+    }
+
+    /** Append an out-of-band event (dispute, refund, reversal…) to a subscription. */
+    public function appendEvent(string $id, array $event): void
+    {
+        $data = $this->read();
+        foreach ($data['subscriptions'] as &$s) {
+            if ($s['id'] === $id) {
+                $s['events'][] = $event;
+            }
+        }
+        $this->write($data);
+    }
+
+    /**
+     * Record a webhook event id as processed. Returns true if it was newly
+     * recorded, false if we've already seen it (idempotent handler dedupe).
+     */
+    public function markEventProcessed(string $eventId): bool
+    {
+        if ($eventId === '') return true;
+        $data = $this->read();
+        $seen = $data['webhook_events'] ?? [];
+        if (in_array($eventId, $seen, true)) return false;
+        $seen[] = $eventId;
+        // Keep the dedupe list bounded.
+        if (count($seen) > 1000) $seen = array_slice($seen, -1000);
+        $data['webhook_events'] = $seen;
+        $this->write($data);
+        return true;
+    }
+
     /** Subscriptions whose next charge is due (active or in dunning). */
     public function due(int $nowTs): array
     {

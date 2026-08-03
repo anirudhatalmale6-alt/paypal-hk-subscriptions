@@ -18,10 +18,12 @@ declare(strict_types=1);
 require __DIR__ . '/../config.php';
 require __DIR__ . '/../src/PayPalClient.php';
 require __DIR__ . '/../src/VaultRecurring.php';
+require __DIR__ . '/../src/ResponseCodes.php';
 require __DIR__ . '/../src/Store.php';
 
 use PayPalHK\PayPalClient;
 use PayPalHK\VaultRecurring;
+use PayPalHK\ResponseCodes;
 use PayPalHK\Store;
 
 const MAX_RETRIES          = 8;   // keep chasing late bank approvals
@@ -47,9 +49,11 @@ foreach ($due as $sub) {
         'description' => 'Monthly membership',
     ]);
 
+    $cls = ResponseCodes::classify($res['response_code']);
     $store->appendCharge($sub['id'], [
         'type' => 'recurring', 'amount' => $sub['monthly_amount'], 'ok' => $res['ok'],
         'capture_id' => $res['capture_id'], 'response_code' => $res['response_code'],
+        'response_label' => $cls['label'], 'category' => $cls['category'], 'retryable' => $cls['retryable'],
         'decline' => $res['decline_detail'], 'debug_id' => $res['debug_id'], 'at' => date('c', $now),
     ]);
 

@@ -9,12 +9,16 @@ require __DIR__ . '/../config.php';
 require __DIR__ . '/../src/PayPalClient.php';
 require __DIR__ . '/../src/SubscriptionService.php';
 require __DIR__ . '/../src/WebhookVerifier.php';
+require __DIR__ . '/../src/WebhookHandler.php';
+require __DIR__ . '/../src/ResponseCodes.php';
 require __DIR__ . '/../src/VaultRecurring.php';
 require __DIR__ . '/../src/Store.php';
 
 use PayPalHK\PayPalClient;
 use PayPalHK\SubscriptionService;
 use PayPalHK\WebhookVerifier;
+use PayPalHK\WebhookHandler;
+use PayPalHK\ResponseCodes;
 use PayPalHK\VaultRecurring;
 use PayPalHK\Store;
 use PayPalHK\PayPalException;
@@ -124,14 +128,18 @@ try {
             }
 
             // Charge the trial as the first (customer-initiated) transaction.
+            // subId is generated first so it can be attached as custom_id -> lets
+            // webhooks (disputes/refunds) map a transaction back to the sub.
             // Stable request id => PayPal de-dupes a concurrent double-submit.
+            $subId = 'sub_' . bin2hex(random_bytes(6));
             $charge = $vault->charge($vaultId, $TRIAL_AMOUNT, $CURRENCY, 'FIRST', [
                 'description' => '48h trial',
+                'custom_id'   => $subId,
                 'request_id'  => 'trial-' . substr(hash('sha256', $setupTokenId), 0, 24),
             ]);
+            $cls = ResponseCodes::classify($charge['response_code']);
 
-            $subId = 'sub_' . bin2hex(random_bytes(6));
-            $now   = time();
+            $now = time();
             $sub = [
                 'id'              => $subId,
                 'vault_id'        => $vaultId,
@@ -149,6 +157,7 @@ try {
                 'charges'         => [[
                     'type' => 'trial', 'amount' => $TRIAL_AMOUNT, 'ok' => $charge['ok'],
                     'capture_id' => $charge['capture_id'], 'response_code' => $charge['response_code'],
+                    'response_label' => $cls['label'], 'category' => $cls['category'], 'retryable' => $cls['retryable'],
                     'decline' => $charge['decline_detail'], 'debug_id' => $charge['debug_id'], 'at' => date('c', $now),
                 ]],
             ];
@@ -208,15 +217,27 @@ try {
             break;
 
         case 'webhook':
-            // Inbound PayPal webhook. Verify signature, persist, ack 200 fast.
+            // Inbound PayPal webhook. Verify signature, dispatch, ack 200 fast.
             $raw      = file_get_contents('php://input');
             $verifier = new WebhookVerifier($client, $cfg['webhook_id']);
             $ok       = $cfg['webhook_id'] ? $verifier->verify(getallheaders(), $raw) : false;
             $event    = json_decode($raw, true) ?: [];
             $logger('info', 'Webhook received', ['verified' => $ok, 'type' => $event['event_type'] ?? '?', 'id' => $event['id'] ?? '?']);
-            // TODO (M2): idempotent handler dispatch on $event['event_type'].
-            http_response_code(200);
-            echo json_encode(['received' => true]);
+
+            // Only act on verified events in production. (When no webhook id is
+            // configured - e.g. local demo - we skip verification but still
+            // dispatch so the handler can be exercised.)
+            if ($ok || !$cfg['webhook_id']) {
+                $handler = new WebhookHandler($store, $logger);
+                $result  = $handler->handle($event);
+                $logger('info', 'Webhook handled', $result);
+                http_response_code(200);
+                echo json_encode(['received' => true] + $result);
+            } else {
+                // Signature failed - do not act; 400 so PayPal retries/flags.
+                http_response_code(400);
+                echo json_encode(['received' => false, 'error' => 'signature_verification_failed']);
+            }
             break;
 
         default:

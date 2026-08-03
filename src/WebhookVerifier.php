@@ -42,17 +42,19 @@ class WebhookVerifier
     }
 
     /**
-     * The events this integration listens for, and what each drives.
-     * (Registered against the webhook in the PayPal dashboard or via API.)
+     * The events this integration listens for, and what each drives. These are
+     * the events to register against the webhook (dashboard or API) for the
+     * vault + merchant-initiated card model (Orders/Payments, not native
+     * Subscriptions). Handled in WebhookHandler.
      */
     public const EVENTS = [
-        'BILLING.SUBSCRIPTION.ACTIVATED'  => 'mark subscription active / grant access',
-        'BILLING.SUBSCRIPTION.CREATED'    => 'record pending subscription',
-        'PAYMENT.SALE.COMPLETED'          => 'trial or recurring charge succeeded -> extend paid period',
-        'PAYMENT.SALE.DENIED'             => 'charge failed -> mark past_due (retries continue)',
-        'BILLING.SUBSCRIPTION.PAYMENT.FAILED' => 'a scheduled payment failed -> track before retries exhaust',
-        'BILLING.SUBSCRIPTION.CANCELLED'  => 'revoke access',
-        'BILLING.SUBSCRIPTION.SUSPENDED'  => 'revoke access (retries exhausted)',
-        'BILLING.SUBSCRIPTION.EXPIRED'    => 'subscription ended',
+        'PAYMENT.CAPTURE.COMPLETED'   => 'trial or recurring charge succeeded -> reconcile',
+        'PAYMENT.CAPTURE.DENIED'      => 'an out-of-band capture was denied -> log/annotate',
+        'PAYMENT.CAPTURE.REFUNDED'    => 'a charge was refunded -> annotate subscription',
+        'PAYMENT.CAPTURE.REVERSED'    => 'funds reversed (e.g. chargeback settled) -> suspend',
+        'CUSTOMER.DISPUTE.CREATED'    => 'dispute/chargeback opened -> SUSPEND subscription',
+        'CUSTOMER.DISPUTE.RESOLVED'   => 'dispute resolved -> annotate outcome',
+        'CUSTOMER.DISPUTE.UPDATED'    => 'dispute updated -> annotate',
+        'VAULT.PAYMENT-TOKEN.DELETED' => 'stored card removed -> cannot bill -> suspend',
     ];
 }

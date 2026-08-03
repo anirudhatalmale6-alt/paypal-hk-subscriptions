@@ -86,6 +86,8 @@ flag right is what lets renewals run unattended.
 | `src/Store.php` | Subscription persistence (JSON in the demo → Eloquent models in Laravel). Exposes `due(now)` for the scheduler |
 | `src/SubscriptionService.php` | Native Subscriptions API wrapper — retained for the PayPal-wallet payer path and in case card subs get enabled for HK later |
 | `src/WebhookVerifier.php` | `verify-webhook-signature`; the event list to subscribe to |
+| `src/WebhookHandler.php` | Idempotent dispatch of verified events -> subscription state changes (dispute -> suspend, etc.) |
+| `src/ResponseCodes.php` | Maps processor response codes -> label + category + retryable (drives retries & analytics) |
 | `public/api.php` | `create-setup-token`, `finalize`, `get`, `cancel`, `webhook` |
 | `public/index.php` | Checkout page: hosted card fields, Fraudnet, plan summary |
 | `scripts/run_billing.php` | **Cron driver.** Charges due subscriptions as MIT; retry/dunning policy |
@@ -134,6 +136,49 @@ flag right is what lets renewals run unattended.
   blocked card leaves nothing stored. The cap is per-card, not global — a
   different card is unaffected. (Verified end-to-end: 1st/2nd succeed, 3rd
   blocked, other cards still work.)
+
+## 6c. Webhooks
+
+Inbound events are signature-verified (`/v1/notifications/verify-webhook-signature`)
+and dispatched by `WebhookHandler`. Every branch is idempotent (dedupe on the
+event id), and each transaction carries `custom_id = <subscription id>` so events
+can be mapped back to the subscription (disputes/reversals also match on the
+capture id). Events registered for the vault + MIT card model:
+
+| Event | Effect |
+|---|---|
+| `PAYMENT.CAPTURE.COMPLETED` | reconcile a successful charge (info) |
+| `PAYMENT.CAPTURE.DENIED` | annotate an out-of-band denied capture |
+| `PAYMENT.CAPTURE.REFUNDED` | annotate the subscription with the refund |
+| `PAYMENT.CAPTURE.REVERSED` | funds reversed -> **suspend** |
+| `CUSTOMER.DISPUTE.CREATED` | chargeback opened -> **suspend** (per requirement) |
+| `CUSTOMER.DISPUTE.RESOLVED` / `.UPDATED` | annotate the dispute outcome |
+| `VAULT.PAYMENT-TOKEN.DELETED` | stored card gone -> cannot bill -> **suspend** |
+
+The endpoint returns `200` fast on verified events (so PayPal does not
+re-deliver) and `400` on a failed signature.
+
+## 6d. Processor response-code mapping
+
+`ResponseCodes::classify($code)` maps each `processor_response.response_code`
+to `{label, category, retryable}`. Categories:
+
+- `approved` — success (`0000`).
+- `soft_decline` (**retryable**) — issuer *might* approve later: insufficient
+  funds (`5120`), do-not-honor (`0500`), generic decline (`5100`). These are the
+  ones a bank often clears on the 5th/6th attempt.
+- `hard_decline` (**not retryable**) — permanent: expired (`5400`), card closed
+  (`5140`), lost/stolen (`9520`), invalid/restricted (`5180`), fraud (`9500`)…
+- `authentication_required` — issuer wants SCA again (`5650`); cannot be silently
+  retried as an MIT.
+- `unknown` — undocumented code; treated as soft/retryable so we never give up
+  early (still capped by the scheduler's `MAX_RETRIES`).
+
+Every charge (trial and recurring) stores its `category` and `retryable` flag
+alongside the raw code, AVS/CVV and `PayPal-Debug-Id`. This is both the input to
+the smart-retry policy and the dataset for decline analytics. **The exact retry
+schedule (spacing, max attempts, which categories to chase) is a policy layer on
+top of this and is being finalised with the client.**
 
 ## 7. Front-end card fields — RESOLVED (2026-08-03)
 
