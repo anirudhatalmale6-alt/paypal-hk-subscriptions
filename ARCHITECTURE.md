@@ -117,27 +117,55 @@ flag right is what lets renewals run unattended.
   tuning retry timing and pricing later. (Note: end-customer notifications are
   intentionally disabled per requirement — recovery is fully silent.)
 
-## 7. Open dependency on PayPal (raised with their reps)
+## 7. Front-end card fields — RESOLVED (2026-08-03)
 
-The backend is complete and verified. The **front-end card fields** use PayPal's
-v6 web SDK (`https://www.paypal.com/web-sdk/v6/core`,
-`createCardFieldsSavePaymentSession`). This component requires
-`createInstance({ clientToken })` where `clientToken` must be a **JWT containing a
-`client_id` claim**. Neither the `/v1/identity/generate-token` token (Braintree
-format) nor the standard OAuth `id_token` (no `client_id` claim) satisfies this,
-and the exact mint method for this account is not in PayPal's public docs. This is
-question 12 in the list sent to PayPal support; their answer unblocks the front
-end immediately (the entire flow behind it is already built and tested).
+The **front-end card fields** use PayPal's v6 web SDK
+(`createCardFieldsSavePaymentSession`). Getting them to mount required four
+things that were previously blocking; all are now solved and verified in a real
+browser (Playwright, sandbox):
+
+1. **Load the SDK core from the matching environment host.** Sandbox credentials
+   require `https://www.sandbox.paypal.com/web-sdk/v6/core`; live credentials
+   require `https://www.paypal.com/web-sdk/v6/core`. Loading the production core
+   with sandbox credentials fails with "missing clientId auth". The page now
+   derives the host from the credential environment.
+2. **Initialise with the public `clientId`, not a token.** The card-fields /
+   save-payment session initialises with `createInstance({ clientId })` using the
+   plain public client id (safe to expose in the browser). A client token is only
+   needed for Fastlane.
+3. **Eligibility gate.** Call `sdkInstance.findEligibleMethods()` and confirm
+   `isEligible('advanced_cards')` before creating the fields. On this account,
+   sandbox returns eligible — confirming advanced (unbranded) card processing.
+4. **The fields render inside a shadow DOM.** `createCardFieldsComponent({type})`
+   returns a `<paypal-hosted-card-field>` custom element; its secure iframe lives
+   in the element's shadow root (so an outer `querySelectorAll('iframe')` sees
+   nothing even when it is working).
+
+We also mint a browser-safe **client token** server-side for completeness
+(`PayPalClient::browserClientToken`, `response_type=client_token` — the only
+variant that returns a JWT carrying a `client_id` claim; `id_token` and
+`/v1/identity/generate-token` do not). It is available for the Fastlane / vaulted-
+token paths but is not required for the card fields themselves.
+
+Separately, the **Fraudnet** config uses PayPal's fixed `fncls` value
+(`fnparams-dede7cc5-15fd-4c75-a9f4-36c430ee3a99`) and the `fb.js` collector is
+loaded at the end of `<body>` so `document.body` exists when it initialises.
+
+Verified in-browser: all three fields (number, expiry, cvv) render their PayPal-
+hosted iframes, the pay button enables, and there are zero page errors.
 
 ## 8. Go-live checklist
 
 1. PayPal confirms live Advanced Card Payments + reference transactions (MIT) on
-   the account (questions 3, 5, 6).
-2. PayPal confirms the v6 SDK client-token method (question 12).
-3. Swap sandbox credentials for live in `.env`.
-4. Register the live webhook, set `PAYPAL_WEBHOOK_ID`.
-5. Confirm EUR/USD balances are held (no auto-convert to HKD) — question 9.
-6. Smoke-test one real card end to end; schedule `run_billing.php` on cron.
+   the account (questions 3, 5, 6). NOTE: the live dashboard already shows
+   Advanced Credit and Debit Card Payments, Save payment methods (Vault) and
+   JavaScript SDK v6 all enabled — so the architecture's building blocks are live.
+2. Swap sandbox credentials for live in `.env` (the SDK core host switches to
+   `www.paypal.com` automatically) and set `PAYPAL_SDK_DOMAINS` to the live
+   checkout domain(s).
+3. Register the live webhook, set `PAYPAL_WEBHOOK_ID`.
+4. Confirm EUR/USD balances are held (no auto-convert to HKD) — question 9.
+5. Smoke-test one real card end to end; schedule `run_billing.php` on cron.
 
 ## 9. Verified sandbox evidence
 

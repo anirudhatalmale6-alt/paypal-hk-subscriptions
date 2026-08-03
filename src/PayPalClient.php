@@ -67,9 +67,48 @@ class PayPalClient
     }
 
     /**
-     * Generate a user id token (a.k.a. SDK token) via the OAuth endpoint.
-     * Required by the JS SDK CardFields component for the subscription flow;
-     * passed to the SDK script as data-user-id-token.
+     * Mint a browser-safe client token for the Web SDK v6 (`createInstance`).
+     *
+     * This is the token the v6 `card-fields` component requires. It must be a
+     * JWT whose payload carries a `client_id` claim -- which ONLY the
+     * `response_type=client_token` variant of the OAuth endpoint returns.
+     * (The `response_type=id_token` variant returns a JWT with NO client_id
+     * claim, and `/v1/identity/generate-token` returns a Braintree-format token
+     * that is not a JWT -- both are rejected by createInstance. Verified against
+     * the sandbox 2026-08-03.)
+     *
+     * @param string[] $domains Optional fully-qualified domain(s) the token is
+     *                          scoped to (e.g. ['checkout.example.com']). Real
+     *                          hostnames only -- an IP is rejected as
+     *                          "invalid_domain". Omit for local dev.
+     */
+    public function browserClientToken(array $domains = []): ?string
+    {
+        $fields = 'grant_type=client_credentials&response_type=client_token';
+        foreach ($domains as $d) {
+            $fields .= '&domains[]=' . rawurlencode($d);
+        }
+
+        $ch = curl_init($this->base . '/v1/oauth2/token');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_USERPWD        => $this->clientId . ':' . $this->secret,
+            CURLOPT_HTTPHEADER     => ['Accept: application/json'],
+            CURLOPT_POSTFIELDS     => $fields,
+            CURLOPT_TIMEOUT        => 30,
+        ]);
+        $data = json_decode((string) curl_exec($ch), true) ?: [];
+        curl_close($ch);
+
+        // The browser-safe client token is returned in `access_token` (a JWT).
+        return $data['access_token'] ?? null;
+    }
+
+    /**
+     * Generate a user id token via the OAuth endpoint. Retained for reference /
+     * the PayPal-wallet payer path. NOTE: this is NOT the token the v6 card
+     * fields need -- use browserClientToken() for that.
      */
     public function idToken(): ?string
     {

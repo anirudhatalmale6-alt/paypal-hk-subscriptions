@@ -38,5 +38,8 @@ function pp_config(): array
         'plan_id'       => getenv('PAYPAL_PLAN_ID') ?: '',
         'webhook_id'    => getenv('PAYPAL_WEBHOOK_ID') ?: '',
         'currency'      => getenv('CURRENCY') ?: 'EUR',
+        // Comma-separated checkout domain(s) to scope the browser client token
+        // to in production (e.g. "checkout.example.com"). Leave blank for local.
+        'sdk_domains'   => getenv('PAYPAL_SDK_DOMAINS') ?: '',
     ];
 }

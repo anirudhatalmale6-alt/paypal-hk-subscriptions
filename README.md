@@ -79,8 +79,10 @@ php scripts/run_billing.php
 
 - Backend recurring engine (vault → trial → monthly MIT → retry/dunning →
   decline logging): **built and verified end-to-end in sandbox.**
-- Front-end card fields: pending confirmation from PayPal of the exact v6 SDK
-  client-token generation for the card-fields component on this account (raised
-  with PayPal support).
-- Go-live: swap sandbox credentials for live once PayPal confirms live card
-  processing on the account.
+- Front-end card fields (v6 web SDK, hosted number/expiry/cvv, 3DS, SAQ A):
+  **working and verified in a real browser** — the fields render, the account is
+  eligible for `advanced_cards`, and there are no page errors. See
+  ARCHITECTURE.md §7 for the exact integration details.
+- Go-live: swap sandbox credentials for live (the SDK host switches automatically)
+  and register the live webhook. The live dashboard already shows Advanced Card
+  Payments, Vault and JS SDK v6 enabled.

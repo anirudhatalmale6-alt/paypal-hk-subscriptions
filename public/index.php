@@ -12,12 +12,22 @@ $currency = $cfg['currency'];
 // Per-session Fraudnet correlation id (CMID) -> also forwarded server-side.
 $cmid = bin2hex(random_bytes(16));
 
-// The v6 save-payment (vault) card-fields session requires a JWT client token.
-// This is the id_token from the OAuth endpoint (a real JWT), NOT the
-// Braintree-style token from /v1/identity/generate-token.
+// The Web SDK core script MUST be loaded from the host that matches the
+// credentials' environment: sandbox creds -> www.sandbox.paypal.com,
+// live creds -> www.paypal.com. Loading the production core with sandbox
+// credentials makes eligibility/auth fail ("missing clientId auth").
+$isSandbox = strpos($cfg['api_base'], 'sandbox') !== false;
+$sdkHost   = $isSandbox ? 'https://www.sandbox.paypal.com' : 'https://www.paypal.com';
+
+// The v6 save-payment (vault) card-fields session requires a browser-safe
+// client token: a JWT whose payload carries a client_id claim. Only the
+// response_type=client_token OAuth variant returns that (see
+// PayPalClient::browserClientToken). In production, pass your live checkout
+// domain(s) so the token is scoped to them, e.g. ['checkout.example.com'].
 $clientToken = '';
 try {
-    $clientToken = (string) (new PayPalClient($cfg))->idToken();
+    $domains = array_filter(array_map('trim', explode(',', $cfg['sdk_domains'] ?? '')));
+    $clientToken = (string) (new PayPalClient($cfg))->browserClientToken($domains);
 } catch (\Throwable $e) {
     $clientToken = '';
 }
@@ -41,8 +51,9 @@ try {
   .plan .row.total { font-weight:600; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line); }
   .plan .note { color:var(--muted); font-size:12px; margin-top:8px; }
   label { display:block; font-size:13px; font-weight:600; margin:14px 0 6px; }
-  .field { min-height:44px; border:1px solid var(--line); border-radius:9px; padding:2px 6px; background:#fff; }
+  .field { height:46px; border:1px solid var(--line); border-radius:9px; padding:0 6px; background:#fff; display:flex; align-items:center; }
   .field:focus-within { border-color:var(--brand); box-shadow:0 0 0 3px rgba(43,92,255,.12); }
+  .field paypal-hosted-card-field { display:block; width:100%; height:44px; }
   .grid { display:flex; gap:12px; }
   .grid > div { flex:1; }
   input.plain { width:100%; height:40px; border:0; outline:0; font-size:15px; font-family:inherit; color:var(--ink); background:transparent; }
@@ -56,14 +67,15 @@ try {
   @keyframes s { to { transform:rotate(360deg); } }
 </style>
 
-<!-- Fraudnet / Data Collector: telemetry that materially lifts cross-border card acceptance. -->
-<script type="application/json" fncls="fncls-b6d5d1d8-2e34-4c67-9c1a-example" id="fconfig">
-{"f":"<?php echo $cmid; ?>","s":"membership-checkout-page","sandbox":true}
+<!-- Fraudnet / Data Collector config: telemetry that materially lifts cross-border
+     card acceptance. The fb.js collector itself is loaded at the end of <body>
+     so document.body exists when it initialises. -->
+<script type="application/json" fncls="fnparams-dede7cc5-15fd-4c75-a9f4-36c430ee3a99" id="fconfig">
+{"f":"<?php echo $cmid; ?>","s":"membership-checkout-page","sandbox":<?php echo $isSandbox ? 'true' : 'false'; ?>}
 </script>
-<script type="text/javascript" src="https://c.paypal.com/da/r/fb.js"></script>
 
-<!-- PayPal Web SDK v6 (card-fields component) -->
-<script async src="https://www.paypal.com/web-sdk/v6/core" onload="onPayPalWebSdkLoaded()"></script>
+<!-- PayPal Web SDK v6 (card-fields component) - host matches credential env -->
+<script async src="<?php echo $sdkHost; ?>/web-sdk/v6/core" onload="onPayPalWebSdkLoaded()"></script>
 </head>
 <body>
 <div class="wrap">
@@ -109,24 +121,38 @@ var CLIENT_TOKEN = <?php echo json_encode($clientToken); ?>;
 var CMID = <?php echo json_encode($cmid); ?>;
 var btn = document.getElementById('pay-btn');
 var msg = document.getElementById('msg');
-var session = null;
+var cardSession = null;
 
 function show(type, text) { msg.className = 'msg ' + type; msg.textContent = text; }
 
+// Initialise the PayPal Web SDK v6 and mount the hosted card fields.
+// Flow mirrors PayPal's official save-payment (vault) reference integration:
+//   createInstance -> findEligibleMethods -> createCardFieldsSavePaymentSession
+//   -> createCardFieldsComponent(number|expiry|cvv) -> appendChild
 async function onPayPalWebSdkLoaded() {
   try {
+    // The card-fields (save-payment) flow initialises with the public client
+    // id -- safe to expose in the browser. (A client token is only required for
+    // Fastlane; card fields + vault work with the client id.)
     var sdk = await window.paypal.createInstance({
-      clientToken: CLIENT_TOKEN,
-      components: ['card-fields'],
-      pageType: 'checkout'
+      clientId: CLIENT_ID,
+      components: ['card-fields']
     });
 
-    // Save-payment session: vaults the card (with 3DS) for recurring reuse.
-    session = sdk.createCardFieldsSavePaymentSession();
+    // Eligibility gate: the card-fields session is only valid when the account
+    // is eligible for advanced (unbranded) card processing.
+    var methods = await sdk.findEligibleMethods({ currencyCode: '<?php echo $currency; ?>' });
+    if (!methods.isEligible('advanced_cards')) {
+      show('err', 'Card payments are not enabled on this account (advanced_cards not eligible).');
+      return;
+    }
 
-    var number = session.createCardFieldsComponent({ type: 'number', placeholder: '1234 5678 9012 3456' });
-    var expiry = session.createCardFieldsComponent({ type: 'expiry', placeholder: 'MM/YY' });
-    var cvv    = session.createCardFieldsComponent({ type: 'cvv',    placeholder: 'CVV' });
+    // Save-payment session: vaults the card (with 3DS) for recurring reuse.
+    cardSession = sdk.createCardFieldsSavePaymentSession();
+
+    var number = cardSession.createCardFieldsComponent({ type: 'number', placeholder: '1234 5678 9012 3456' });
+    var expiry = cardSession.createCardFieldsComponent({ type: 'expiry', placeholder: 'MM/YY' });
+    var cvv    = cardSession.createCardFieldsComponent({ type: 'cvv',    placeholder: 'CVV' });
 
     document.getElementById('pp-number').appendChild(number);
     document.getElementById('pp-expiry').appendChild(expiry);
@@ -140,6 +166,7 @@ async function onPayPalWebSdkLoaded() {
 }
 
 async function pay() {
+  if (!cardSession) return;
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>Processing&hellip;';
   show('', '');
@@ -149,11 +176,13 @@ async function pay() {
     var st = await stRes.json();
     if (!st.id) throw new Error(st.error || 'Could not start card save');
 
-    // 2. Submit the card into the setup token (runs 3DS, tokenises card).
-    var result = await session.submit(st.id, {
-      billingAddress: { countryCode: 'FR' }
-    });
-    void result;
+    // 2. Submit the card into the setup token (runs 3DS, tokenises the card).
+    //    v6 returns { data, state }; only 'succeeded' should finalise.
+    var result = await cardSession.submit(st.id);
+    if (result && result.state && result.state !== 'succeeded') {
+      if (result.state === 'canceled') throw new Error('Card authentication was cancelled.');
+      throw new Error((result.data && result.data.message) || 'Card was declined.');
+    }
 
     // 3. Backend exchanges the token, charges the trial, creates the subscription.
     var finRes = await fetch('api.php?action=finalize', {
@@ -175,5 +204,8 @@ async function pay() {
 
 btn.addEventListener('click', pay);
 </script>
+
+<!-- Fraudnet collector: loaded last so document.body is present on init. -->
+<script type="text/javascript" src="https://c.paypal.com/da/r/fb.js"></script>
 </body>
 </html>
