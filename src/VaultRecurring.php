@@ -70,10 +70,20 @@ class VaultRecurring
             ]],
         ], [
             'Prefer: return=representation',
-            'PayPal-Request-Id: ord-' . bin2hex(random_bytes(8)),
+            // A stable request id can be supplied (e.g. derived from the setup
+            // token) so a double-submit is de-duplicated by PayPal and never
+            // charges twice; otherwise a fresh id is used per call.
+            'PayPal-Request-Id: ' . ($meta['request_id'] ?? 'ord-' . bin2hex(random_bytes(8))),
         ]);
 
         return $this->normaliseCapture($res);
+    }
+
+    /** Delete a vault payment token (e.g. a card blocked by the trial cap so we
+     *  don't retain a card we will never charge). */
+    public function deleteVaultToken(string $vaultId): array
+    {
+        return $this->client->request('DELETE', '/v3/vault/payment-tokens/' . rawurlencode($vaultId));
     }
 
     /**

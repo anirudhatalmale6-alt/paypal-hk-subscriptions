@@ -93,7 +93,9 @@ flag right is what lets renewals run unattended.
 
 ## 5. Data model (maps to two Laravel tables)
 
-`subscriptions`: `id`, `vault_id`, `email`, `currency`, `monthly_amount`,
+`subscriptions`: `id`, `vault_id`, `setup_token` (idempotency key), `card_fp`
+(card fingerprint for the trial cap), `card_last4`, `card_brand`, `email`,
+`currency`, `monthly_amount`,
 `status` (active | past_due | suspended | payment_failed | cancelled),
 `created_at`, `next_billing_at`, `retry_count`, `last_charge_at`.
 
@@ -116,6 +118,22 @@ flag right is what lets renewals run unattended.
   AVS/CVV result, decline reason, and `PayPal-Debug-Id`. That is the dataset for
   tuning retry timing and pricing later. (Note: end-customer notifications are
   intentionally disabled per requirement — recovery is fully silent.)
+
+## 6b. Abuse & double-charge safeguards
+
+- **Idempotent finalize.** The `finalize` endpoint is keyed on the vault setup
+  token. A re-submitted or double-clicked finalize returns the *existing*
+  subscription (`idempotent: true`) instead of charging the trial again. The
+  trial charge itself also carries a stable `PayPal-Request-Id` derived from the
+  setup token, so PayPal de-duplicates a concurrent retry server-side too.
+- **Per-card trial cap.** A card may start at most `MAX_TRIALS_PER_CARD` (= 2)
+  trials. On finalize we fingerprint the card from its vault metadata
+  (`sha256(brand|last4|expiry)`, stored as `card_fp` — never the PAN) and count
+  prior successful trials for that fingerprint. On the 3rd attempt the flow is
+  blocked *before any charge*, and the just-created vault token is deleted so a
+  blocked card leaves nothing stored. The cap is per-card, not global — a
+  different card is unaffected. (Verified end-to-end: 1st/2nd succeed, 3rd
+  blocked, other cards still work.)
 
 ## 7. Front-end card fields — RESOLVED (2026-08-03)
 

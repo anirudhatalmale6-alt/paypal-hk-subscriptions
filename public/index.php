@@ -191,7 +191,7 @@ async function pay() {
       body: JSON.stringify({ setup_token: st.id, cmid: CMID })
     });
     var fin = await finRes.json();
-    if (!finRes.ok || fin.error) throw new Error(fin.error || 'Payment failed');
+    if (!finRes.ok || fin.error) throw new Error(fin.message || fin.error || 'Payment failed');
 
     show('ok', 'Subscription active! ' + fin.subscription_id + ' — trial €2.90 charged, then €49.50/mo from ' + (fin.next_billing || '').slice(0, 10) + '.');
     btn.innerHTML = 'Subscribed';

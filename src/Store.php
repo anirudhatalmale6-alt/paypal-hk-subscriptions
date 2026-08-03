@@ -72,6 +72,36 @@ class Store
         $this->write($data);
     }
 
+    /** Look up an existing subscription by the setup token it was created from
+     *  (idempotency: a re-submitted finalize returns the same record). */
+    public function findBySetupToken(string $token): ?array
+    {
+        if ($token === '') return null;
+        foreach ($this->read()['subscriptions'] as $s) {
+            if (($s['setup_token'] ?? null) === $token) return $s;
+        }
+        return null;
+    }
+
+    /**
+     * Count how many *successful* trial purchases a given card fingerprint has
+     * already made. Drives the anti-abuse cap (max 2 trials per card).
+     * A "trial purchase" = a subscription created from that card whose trial
+     * charge succeeded.
+     */
+    public function countTrialsByCard(string $cardFp): int
+    {
+        if ($cardFp === '') return 0;
+        $n = 0;
+        foreach ($this->read()['subscriptions'] as $s) {
+            if (($s['card_fp'] ?? null) !== $cardFp) continue;
+            foreach (($s['charges'] ?? []) as $c) {
+                if (($c['type'] ?? '') === 'trial' && !empty($c['ok'])) { $n++; break; }
+            }
+        }
+        return $n;
+    }
+
     /** Subscriptions whose next charge is due (active or in dunning). */
     public function due(int $nowTs): array
     {
