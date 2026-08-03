@@ -117,6 +117,7 @@ flag right is what lets renewals run unattended.
 | `src/WebhookVerifier.php` | `verify-webhook-signature`; the event list to subscribe to |
 | `src/WebhookHandler.php` | Idempotent dispatch of verified events -> subscription state changes (dispute -> suspend, etc.) |
 | `src/ResponseCodes.php` | Maps processor response codes -> label + category + retryable (drives retries & analytics) |
+| `src/RetryPolicy.php` | Smart-retry / dunning decision logic (pure, unit-tested); insufficient-funds half-price; recovery logging |
 | `public/api.php` | `create-setup-token`, `finalize`, `get`, `cancel`, `webhook` |
 | `public/index.php` | Checkout page: hosted card fields, Fraudnet, plan summary |
 | `scripts/run_billing.php` | **Cron driver.** Charges due subscriptions as MIT; retry/dunning policy |
@@ -142,9 +143,20 @@ flag right is what lets renewals run unattended.
   European cards; loading the script without forwarding the header does nothing.
 - **SCA** — `verification.method = SCA_WHEN_REQUIRED`: 3DS is enforced only where
   PSD2 mandates it (EU/UK) and skipped elsewhere, minimising friction.
-- **Retries** — `run_billing.php` keeps retrying declines (`MAX_RETRIES = 8`,
-  spaced `RETRY_INTERVAL_HOURS = 48`) so late bank approvals (attempt 5–6) are
-  captured; the subscription only suspends once retries are exhausted.
+- **Smart retries / dunning** (`src/RetryPolicy.php`, applied by
+  `run_billing.php`) — decline-aware policy:
+  - hard decline / authentication required → cancel immediately
+  - suspected fraud (9500) → one retry after 7 days, then cancel
+  - soft decline → schedule `+2,+3,+4,+5,+5,+6,+7,+7,+7,+7,+7` days (~2 months)
+    then cancel
+  - insufficient funds (5120) → soft schedule, but after 4 attempts the retry
+    amount halves for the rest of the cycle (resets to full next cycle)
+  - retries are snapped to a morning hour (`RETRY_HOUR`, server TZ) — banks
+    approve more often once overnight deposits post
+  - on a recovery (success after failures) the approval time / hour / weekday /
+    attempt-count / days-since-first-fail are logged (`last_recovery`) to tune
+    the schedule over time
+  The decision logic is pure and unit-tested; the scheduler just applies it.
 - **Decline analytics** — every attempt stores the processor response code,
   AVS/CVV result, decline reason, and `PayPal-Debug-Id`. That is the dataset for
   tuning retry timing and pricing later. (Note: end-customer notifications are
