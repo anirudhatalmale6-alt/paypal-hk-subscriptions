@@ -152,7 +152,9 @@ flag right is what lets renewals run unattended.
   - insufficient funds (5120) → soft schedule, but after 4 attempts the retry
     amount halves for the rest of the cycle (resets to full next cycle)
   - retries are snapped to a morning hour (`RETRY_HOUR`, server TZ) — banks
-    approve more often once overnight deposits post
+    approve more often once overnight deposits post — and insufficient-funds
+    retries are nudged (bounded) onto the next payday-favorable day (1st / 15th /
+    month-end / Mon / Fri)
   - on a recovery (success after failures) the approval time / hour / weekday /
     attempt-count / days-since-first-fail are logged (`last_recovery`) to tune
     the schedule over time

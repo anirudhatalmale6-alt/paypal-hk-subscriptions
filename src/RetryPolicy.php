@@ -49,6 +49,10 @@ final class RetryPolicy
      */
     public const RETRY_HOUR = 10;
 
+    /** For insufficient-funds retries, nudge the date forward (up to this many
+     *  days) onto a payday-favorable day when accounts are more likely funded. */
+    public const PAYDAY_NUDGE_MAX_DAYS = 3;
+
     /** Amount to charge for this attempt: half once the cycle is in insufficient-funds half-price mode. */
     public static function chargeAmount(array $sub): string
     {
@@ -132,6 +136,11 @@ final class RetryPolicy
             return ['action' => 'cancel', 'status' => 'cancelled', 'reason' => 'retries_exhausted'];
         }
         $delayDays = self::SOFT_RETRY_DAYS[$retry];
+        $next = self::atRetryHour($now + $delayDays * 86400);
+        // Insufficient funds: nudge onto the next payday-favorable day.
+        if ($code === self::INSUFFICIENT_FUNDS_CODE) {
+            $next = self::nudgeToPayday($next);
+        }
         return [
             'action'          => 'retry',
             'status'          => 'past_due',
@@ -140,8 +149,28 @@ final class RetryPolicy
             'fraud_retries'   => $fraud,
             'first_fail_at'   => $firstFail,
             'reason'          => $cls['category'] . ($code === self::INSUFFICIENT_FUNDS_CODE ? '_insufficient_funds' : ''),
-            'next_billing_at' => date('c', self::atRetryHour($now + $delayDays * 86400)),
+            'next_billing_at' => date('c', $next),
         ];
+    }
+
+    /** Days most likely to see a funded account: paydays (1st, 15th, month-end)
+     *  and Mondays/Fridays. */
+    public static function isPaydayFavorable(int $ts): bool
+    {
+        $dom  = (int) date('j', $ts);
+        $last = (int) date('t', $ts);
+        $dow  = (int) date('N', $ts); // 1=Mon .. 7=Sun
+        return $dom === 1 || $dom === 15 || $dom === $last || $dow === 1 || $dow === 5;
+    }
+
+    /** Shift a retry timestamp forward (bounded) onto the next favorable day. */
+    public static function nudgeToPayday(int $ts): int
+    {
+        for ($i = 0; $i <= self::PAYDAY_NUDGE_MAX_DAYS; $i++) {
+            $c = self::atRetryHour($ts + $i * 86400);
+            if (self::isPaydayFavorable($c)) return $c;
+        }
+        return $ts;
     }
 
     /** Snap a timestamp to the preferred retry hour on that day (server TZ). */
