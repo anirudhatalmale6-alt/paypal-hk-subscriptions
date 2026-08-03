@@ -47,7 +47,7 @@ foreach ($due as $sub) {
     $res = $vault->charge($sub['vault_id'], $sub['monthly_amount'], $sub['currency'], 'MIT', [
         'custom_id'   => $sub['id'],
         'description' => 'Monthly membership',
-    ]);
+    ], $sub['source_type'] ?? 'card');
 
     $cls = ResponseCodes::classify($res['response_code']);
     $store->appendCharge($sub['id'], [

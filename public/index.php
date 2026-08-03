@@ -65,6 +65,12 @@ try {
   .lock { text-align:center; color:var(--muted); font-size:12px; margin-top:16px; }
   .spin { display:inline-block; width:15px; height:15px; border:2px solid rgba(255,255,255,.5); border-top-color:#fff; border-radius:50%; animation:s .7s linear infinite; vertical-align:-2px; margin-right:6px; }
   @keyframes s { to { transform:rotate(360deg); } }
+  .wallets { margin-top:6px; }
+  .divider { display:flex; align-items:center; text-align:center; color:var(--muted); font-size:12px; margin:18px 0 14px; }
+  .divider::before, .divider::after { content:""; flex:1; height:1px; background:var(--line); }
+  .divider span { padding:0 10px; }
+  paypal-button, apple-pay-button { display:block; width:100%; min-height:44px; }
+  apple-pay-button { --apple-pay-button-height:44px; --apple-pay-button-border-radius:10px; margin-bottom:10px; }
 </style>
 
 <!-- Fraudnet / Data Collector config: telemetry that materially lifts cross-border
@@ -111,6 +117,14 @@ try {
       <button id="pay-btn" type="button" disabled>Loading&hellip;</button>
       <div id="msg" class="msg"></div>
     </form>
+
+    <div id="wallets" class="wallets" hidden>
+      <div class="divider"><span>or pay with</span></div>
+      <!-- v6 SDK web components; each shows ONLY the &euro;2.90 trial in its
+           popup/sheet - the recurring terms stay on this page above. -->
+      <apple-pay-button id="applepay-button" buttonstyle="black" type="plain" hidden></apple-pay-button>
+      <paypal-button id="paypal-button" type="pay" hidden></paypal-button>
+    </div>
     <div class="lock">&#128274; Card details are entered in secure fields hosted by PayPal. They never touch this server (PCI-DSS SAQ A).</div>
   </div>
 </div>
@@ -119,11 +133,89 @@ try {
 var CLIENT_ID = <?php echo json_encode($clientId); ?>;
 var CLIENT_TOKEN = <?php echo json_encode($clientToken); ?>;
 var CMID = <?php echo json_encode($cmid); ?>;
+var CURRENCY_CODE = <?php echo json_encode($currency); ?>;
 var btn = document.getElementById('pay-btn');
 var msg = document.getElementById('msg');
 var cardSession = null;
 
 function show(type, text) { msg.className = 'msg ' + type; msg.textContent = text; }
+
+function showActive(fin) {
+  show('ok', 'Subscription active! ' + fin.subscription_id + ' — trial €2.90 charged, then €49.50/mo from '
+    + (fin.next_billing || '').slice(0, 10) + '.' + (fin.paypal_capture_id ? ' PayPal transaction: ' + fin.paypal_capture_id : ''));
+}
+
+// Apple Pay & PayPal wallet buttons. Each button's popup/sheet shows ONLY the
+// €2.90 trial (the order is created for that amount); the recurring terms stay
+// on this page. On approval we capture + vault, then our engine bills monthly.
+async function initWallets() {
+  if (!CLIENT_TOKEN) return;
+  try {
+    var wsdk = await window.paypal.createInstance({
+      clientToken: CLIENT_TOKEN,
+      components: ['paypal-payments'],
+      pageType: 'checkout'
+    });
+    var methods = await wsdk.findEligibleMethods({ currencyCode: CURRENCY_CODE, paymentFlow: 'VAULT_WITH_PAYMENT' });
+
+    var opts = {
+      savePayment: true,
+      onApprove: async function (data) { await captureWallet(data.orderId); },
+      onCancel: function () { show('', ''); },
+      onError: function (e) { show('err', 'Payment error: ' + (e && e.message ? e.message : e)); }
+    };
+    var shown = false;
+
+    if (methods.isEligible('paypal')) {
+      var ppSession = wsdk.createPayPalOneTimePaymentSession(opts);
+      var ppBtn = document.getElementById('paypal-button');
+      ppBtn.removeAttribute('hidden');
+      ppBtn.addEventListener('click', function () {
+        var order = createWalletOrder('paypal');
+        ppSession.start({ presentationMode: 'auto' }, order)
+          .catch(function (e) { show('err', 'PayPal error: ' + (e && e.message ? e.message : e)); });
+      });
+      shown = true;
+    }
+    if (methods.isEligible('applepay') && typeof wsdk.createApplePayOneTimePaymentSession === 'function') {
+      var apSession = wsdk.createApplePayOneTimePaymentSession(opts);
+      var apBtn = document.getElementById('applepay-button');
+      apBtn.removeAttribute('hidden');
+      apBtn.addEventListener('click', function () {
+        var order = createWalletOrder('apple_pay');
+        apSession.start({ presentationMode: 'auto' }, order)
+          .catch(function (e) { show('err', 'Apple Pay error: ' + (e && e.message ? e.message : e)); });
+      });
+      shown = true;
+    }
+    if (shown) document.getElementById('wallets').removeAttribute('hidden');
+  } catch (e) {
+    // Wallets are optional; the card path is unaffected if this fails.
+    if (window.console) console.log('wallet init skipped: ' + (e && e.message ? e.message : e));
+  }
+}
+
+// Returns a promise for { orderId } (do NOT await before session.start).
+function createWalletOrder(method) {
+  return fetch('api.php?action=create-wallet-order', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ method: method, return_url: location.href, cancel_url: location.href, brand_name: 'TheSmartLookup' })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.order_id) throw new Error(d.error || 'could not create order');
+    return { orderId: d.order_id };
+  });
+}
+
+async function captureWallet(orderId) {
+  show('', '');
+  var r = await fetch('api.php?action=capture-order', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order_id: orderId })
+  });
+  var fin = await r.json();
+  if (!r.ok || fin.error) { show('err', fin.message || fin.error || 'Payment failed'); return; }
+  showActive(fin);
+}
 
 // Initialise the PayPal Web SDK v6 and mount the hosted card fields.
 // Flow mirrors PayPal's official save-payment (vault) reference integration:
@@ -163,6 +255,9 @@ async function onPayPalWebSdkLoaded() {
   } catch (e) {
     show('err', 'Payment module could not initialise: ' + (e && e.message ? e.message : e));
   }
+
+  // Bring up the Apple Pay / PayPal wallet buttons alongside the card form.
+  initWallets();
 }
 
 async function pay() {
@@ -193,8 +288,7 @@ async function pay() {
     var fin = await finRes.json();
     if (!finRes.ok || fin.error) throw new Error(fin.message || fin.error || 'Payment failed');
 
-    show('ok', 'Subscription active! ' + fin.subscription_id + ' — trial €2.90 charged, then €49.50/mo from ' + (fin.next_billing || '').slice(0, 10) + '.'
-      + (fin.paypal_capture_id ? ' PayPal transaction: ' + fin.paypal_capture_id : ''));
+    showActive(fin);
     btn.innerHTML = 'Subscribed';
   } catch (e) {
     btn.disabled = false;

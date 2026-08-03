@@ -69,6 +69,35 @@ which aligns with the optimisation goals.
                                     on decline: past_due, retry (spaced) up to N, then suspend
 ```
 
+### Payment methods (one engine, three funding sources)
+
+All three methods feed the **same** vault + MIT engine, so there is one recurring
+system, one retry policy, one analytics dataset:
+
+| Method | First charge (trial) | Recurring |
+|---|---|---|
+| Card | hosted card fields -> vault -> charge €2.90 (CIT, 3DS) | `card.vault_id` MIT |
+| Apple Pay | Apple Pay sheet -> order €2.90 vault-on-success -> capture | `card.vault_id` MIT |
+| PayPal wallet | PayPal button -> order €2.90 vault-on-success -> capture | `paypal.vault_id` MIT |
+
+The Apple Pay / PayPal popups show **only the €2.90 trial** (the order is created
+for that amount; no recurring terms in the popup). The recurring terms live on the
+checkout page. `VaultRecurring::createOrderWithVault()` builds the trial order with
+`store_in_vault=ON_SUCCESS`; `captureOrder()` captures it and returns the vaulted
+token id + source type; `charge(..., $sourceType)` then bills monthly against the
+right `payment_source` (`card` or `paypal`).
+
+Endpoints: `create-wallet-order` (returns the €2.90 order to approve) and
+`capture-order` (captures + vaults + creates the subscription, same trial-cap and
+decline-analytics as the card flow). Wallet buttons use the browser client token
+(`response_type=client_token`) and the `paypal-payments` v6 component with
+`paymentFlow: VAULT_WITH_PAYMENT` + `savePayment: true`.
+
+Verification status: card = verified end-to-end in a browser. PayPal wallet =
+button renders + €2.90 order creation verified; the approve->capture->vault leg
+needs a sandbox buyer login to run through. Apple Pay = built to the same design;
+final test needs a registered Apple Pay domain + an Apple device/Safari.
+
 ### Why MIT matters for SCA
 
 The **first** charge is customer-initiated (`stored_credential.payment_initiator =

@@ -43,19 +43,26 @@ class VaultRecurring
     }
 
     /**
-     * Charge a vaulted card via Orders v2.
+     * Charge a vaulted payment method via Orders v2 (used for the recurring
+     * monthly MIT charges). Works for any vaulted funding source; the
+     * $sourceType selects the payment_source key: a saved card / Apple Pay card
+     * is 'card', a saved PayPal wallet is 'paypal'.
      *
-     * @param string $vaultId  vault payment token id
-     * @param string $amount   e.g. "49.50"
-     * @param string $mode     'FIRST' (customer-initiated, establishes credential)
-     *                         or 'MIT' (merchant-initiated recurring, SCA-exempt)
+     * @param string $vaultId    vault payment token id
+     * @param string $amount     e.g. "49.50"
+     * @param string $mode       'FIRST' (customer-initiated, establishes the
+     *                           stored credential) or 'MIT' (merchant-initiated
+     *                           recurring, SCA-exempt)
+     * @param string $sourceType 'card' | 'paypal'
      * @return array normalised result incl. capture id + decline reason
      */
-    public function charge(string $vaultId, string $amount, string $currency, string $mode = 'MIT', array $meta = []): array
+    public function charge(string $vaultId, string $amount, string $currency, string $mode = 'MIT', array $meta = [], string $sourceType = 'card'): array
     {
         $stored = $mode === 'FIRST'
             ? ['payment_initiator' => 'CUSTOMER', 'payment_type' => 'RECURRING', 'usage' => 'FIRST']
             : ['payment_initiator' => 'MERCHANT', 'payment_type' => 'RECURRING', 'usage' => 'SUBSEQUENT'];
+
+        $key = $sourceType === 'paypal' ? 'paypal' : 'card';
 
         $res = $this->client->request('POST', '/v2/checkout/orders', [
             'intent' => 'CAPTURE',
@@ -64,7 +71,7 @@ class VaultRecurring
                 'custom_id'   => $meta['custom_id'] ?? null,
                 'description' => $meta['description'] ?? 'Membership',
             ]],
-            'payment_source' => ['card' => [
+            'payment_source' => [$key => [
                 'vault_id'          => $vaultId,
                 'stored_credential' => $stored,
             ]],
@@ -77,6 +84,66 @@ class VaultRecurring
         ]);
 
         return $this->normaliseCapture($res);
+    }
+
+    /**
+     * Create a €X order that ALSO vaults the funding source on success, for the
+     * Apple Pay / PayPal wallet buttons. The buyer's approval popup shows only
+     * this amount (the trial) - no recurring terms - which keeps the wallet/
+     * Apple Pay sheets friction-free; the recurring terms live on the checkout
+     * page. After approval the order is captured and the vaulted token is used
+     * for the monthly MIT charges.
+     *
+     * @param string $method 'paypal' | 'apple_pay'
+     */
+    public function createOrderWithVault(string $amount, string $currency, string $method, array $ctx = []): array
+    {
+        $source = [
+            'attributes' => ['vault' => [
+                'store_in_vault' => 'ON_SUCCESS',
+                'usage_type'     => 'MERCHANT',
+                'customer_type'  => 'CONSUMER',
+            ]],
+        ];
+        if ($method === 'paypal') {
+            $source['experience_context'] = [
+                'return_url'          => $ctx['return_url'] ?? '',
+                'cancel_url'          => $ctx['cancel_url'] ?? '',
+                'shipping_preference' => 'NO_SHIPPING',
+                'user_action'         => 'PAY_NOW',
+                'brand_name'          => $ctx['brand_name'] ?? 'Membership',
+            ];
+        }
+
+        return $this->client->request('POST', '/v2/checkout/orders', [
+            'intent' => 'CAPTURE',
+            'purchase_units' => [[
+                'amount'      => ['currency_code' => $currency, 'value' => $amount],
+                'custom_id'   => $ctx['custom_id'] ?? null,
+                'description' => $ctx['description'] ?? '48h trial',
+            ]],
+            'payment_source' => [$method => $source],
+        ], ['Prefer: return=representation', 'PayPal-Request-Id: vo-' . bin2hex(random_bytes(8))]);
+    }
+
+    /** Capture an approved order (the trial) and surface the vaulted token id. */
+    public function captureOrder(string $orderId): array
+    {
+        $res = $this->client->request('POST', '/v2/checkout/orders/' . rawurlencode($orderId) . '/capture', null,
+            ['Prefer: return=representation']);
+        $norm = $this->normaliseCapture($res);
+
+        // The vaulted token id lands under payment_source.<method>.attributes.vault.id.
+        $ps = $res['body']['payment_source'] ?? [];
+        foreach (['paypal', 'card', 'apple_pay'] as $m) {
+            if (!empty($ps[$m]['attributes']['vault']['id'])) {
+                $norm['vault_id']    = $ps[$m]['attributes']['vault']['id'];
+                $norm['source_type'] = $m === 'paypal' ? 'paypal' : 'card';
+                $norm['card']        = $ps[$m] ?? [];
+                break;
+            }
+        }
+        return $norm;
     }
 
     /** Delete a vault payment token (e.g. a card blocked by the trial cap so we

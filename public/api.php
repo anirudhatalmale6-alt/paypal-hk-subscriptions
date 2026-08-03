@@ -143,6 +143,7 @@ try {
             $sub = [
                 'id'              => $subId,
                 'vault_id'        => $vaultId,
+                'source_type'     => 'card',                  // funding source for MIT
                 'setup_token'     => $setupTokenId,           // idempotency key
                 'card_fp'         => $cardFp,                 // per-card trial cap
                 'card_last4'      => $vaultCard['last_digits'] ?? null,
@@ -178,6 +179,110 @@ try {
                 // dashboard / via API (this is the real transaction, not sub_*).
                 'paypal_capture_id' => $charge['capture_id'],
                 'paypal_order_id'   => $charge['order_id'],
+                'vault_id'          => $vaultId,
+            ]);
+            break;
+
+        // --- Apple Pay / PayPal wallet: create a trial-amount order that vaults
+        // the funding source on success. The buyer's popup/sheet shows ONLY the
+        // trial amount (no recurring terms) per requirement; recurring is driven
+        // by our engine afterwards. ---
+        case 'create-wallet-order':
+            $in     = json_decode(file_get_contents('php://input'), true) ?: [];
+            $method = ($in['method'] ?? 'paypal') === 'apple_pay' ? 'apple_pay' : 'paypal';
+            $subId  = 'sub_' . bin2hex(random_bytes(6)); // carried via custom_id
+            $res = $vault->createOrderWithVault($TRIAL_AMOUNT, $CURRENCY, $method, [
+                'custom_id'   => $subId,
+                'description' => '48h trial',
+                'return_url'  => $in['return_url'] ?? '',
+                'cancel_url'  => $in['cancel_url'] ?? '',
+                'brand_name'  => $in['brand_name'] ?? 'Membership',
+            ]);
+            if ($res['status'] >= 400) {
+                http_response_code($res['status']);
+                echo json_encode(['error' => 'order create failed', 'debug_id' => $res['debugId'], 'detail' => $res['body']]);
+                break;
+            }
+            $approve = null;
+            foreach ($res['body']['links'] ?? [] as $l) {
+                if (in_array($l['rel'] ?? '', ['approve', 'payer-action'], true)) $approve = $l['href'];
+            }
+            echo json_encode(['order_id' => $res['body']['id'] ?? null, 'approve_link' => $approve, 'method' => $method]);
+            break;
+
+        // Capture an approved wallet/Apple Pay order, vault the source, create
+        // the subscription. Same trial-cap + analytics as the card flow.
+        case 'capture-order':
+            $in      = json_decode(file_get_contents('php://input'), true) ?: [];
+            $orderId = $in['order_id'] ?? '';
+            if (!$orderId) { http_response_code(400); echo json_encode(['error' => 'missing order_id']); break; }
+
+            $cap = $vault->captureOrder($orderId);
+            if (!$cap['ok'] || empty($cap['vault_id'])) {
+                http_response_code(402);
+                echo json_encode(['error' => 'capture_or_vault_failed', 'decline' => $cap['decline_detail'], 'debug_id' => $cap['debug_id']]);
+                break;
+            }
+            $vaultId    = $cap['vault_id'];
+            $sourceType = $cap['source_type'] ?? 'card';
+            $psource    = $cap['raw']['payment_source'] ?? [];
+
+            // Fingerprint for the per-account trial cap: card meta for a saved
+            // card/Apple Pay, payer identity for a saved PayPal wallet.
+            if ($sourceType === 'paypal') {
+                $payer   = $psource['paypal'] ?? [];
+                $cardFp  = substr(hash('sha256', 'paypal|' . ($payer['email_address'] ?? $payer['account_id'] ?? $vaultId)), 0, 32);
+                $last4   = null;
+                $brand   = 'PAYPAL';
+            } else {
+                $cardMeta = $psource['card'] ?? [];
+                $cardFp   = $cardFingerprint($cardMeta);
+                $last4    = $cardMeta['last_digits'] ?? null;
+                $brand    = $cardMeta['brand'] ?? null;
+            }
+
+            if ($cardFp !== '' && $store->countTrialsByCard($cardFp) >= $MAX_TRIALS_PER_CARD) {
+                $vault->deleteVaultToken($vaultId);
+                http_response_code(409);
+                echo json_encode(['error' => 'trial_limit_reached', 'message' => 'This payment method has already been used for the maximum number of trials.']);
+                break;
+            }
+
+            // Reuse the sub id we stamped as custom_id at order creation.
+            $subId = $cap['raw']['purchase_units'][0]['custom_id'] ?? ('sub_' . bin2hex(random_bytes(6)));
+            $cls   = ResponseCodes::classify($cap['response_code']);
+            $now   = time();
+            $sub = [
+                'id'              => $subId,
+                'vault_id'        => $vaultId,
+                'source_type'     => $sourceType,
+                'order_id'        => $orderId,
+                'card_fp'         => $cardFp,
+                'card_last4'      => $last4,
+                'card_brand'      => $brand,
+                'email'           => $psource['paypal']['email_address'] ?? ($in['email'] ?? null),
+                'currency'        => $CURRENCY,
+                'monthly_amount'  => $MONTHLY_AMOUNT,
+                'status'          => 'active',
+                'created_at'      => date('c', $now),
+                'next_billing_at' => date('c', $now + $TRIAL_HOURS * 3600),
+                'charges'         => [[
+                    'type' => 'trial', 'amount' => $TRIAL_AMOUNT, 'ok' => true,
+                    'capture_id' => $cap['capture_id'], 'response_code' => $cap['response_code'],
+                    'response_label' => $cls['label'], 'category' => $cls['category'], 'retryable' => $cls['retryable'],
+                    'decline' => $cap['decline_detail'], 'debug_id' => $cap['debug_id'], 'at' => date('c', $now),
+                ]],
+            ];
+            $store->create($sub);
+            echo json_encode([
+                'subscription_id'   => $subId,
+                'status'            => 'active',
+                'trial_charged'     => $TRIAL_AMOUNT . ' ' . $CURRENCY,
+                'next_billing'      => $sub['next_billing_at'],
+                'monthly'           => $MONTHLY_AMOUNT . ' ' . $CURRENCY,
+                'method'            => $sourceType,
+                'paypal_capture_id' => $cap['capture_id'],
+                'paypal_order_id'   => $orderId,
                 'vault_id'          => $vaultId,
             ]);
             break;
