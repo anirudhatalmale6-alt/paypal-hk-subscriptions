@@ -26,4 +26,11 @@ return [
 
     // Anti-abuse: a single card/funding source may start at most this many trials.
     'max_trials_per_card' => (int) env('PAYPAL_MAX_TRIALS_PER_CARD', 2),
+
+    // Wallet buttons (Apple Pay / PayPal). These use "vault on purchase" of the
+    // wallet source, which is a separate PayPal account entitlement from ACDC card
+    // vaulting. Until PayPal enables it on the live app (and the Apple Pay domain is
+    // registered), keep this OFF so the checkout is card-only and never shows a
+    // wallet button that would fail with NOT_ENABLED_TO_VAULT_PAYMENT_SOURCE.
+    'wallets_enabled' => filter_var(env('PAYPAL_WALLETS_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
 ];

@@ -576,7 +576,7 @@
 
 <script>
 (function () {
-  var PP = { clientId:@json($ppClientId), clientToken:@json($ppClientToken), cmid:@json($ppCmid), currency:@json($ppCurrency), api:'/paypal' };
+  var PP = { clientId:@json($ppClientId), clientToken:@json($ppClientToken), cmid:@json($ppCmid), currency:@json($ppCurrency), walletsEnabled:@json($ppWalletsEnabled), api:'/paypal' };
   var form = document.getElementById('payment-form');
   var emailInput = document.getElementById('email');
   var lastName = document.getElementById('last-name');
@@ -717,7 +717,7 @@
       document.getElementById('pp-expiry').appendChild(cardSession.createCardFieldsComponent({type:'expiry', placeholder:'MM/AA'}));
       document.getElementById('pp-cvv').appendChild(cardSession.createCardFieldsComponent({type:'cvv', placeholder:'CVC'}));
     }catch(e){ showErr("Le module de paiement n'a pas pu demarrer."); }
-    initWallets();
+    if(PP.walletsEnabled){ initWallets(); }
   };
   if(window.__ppSdkLoaded){ window.__ppInit(); }
 

@@ -276,6 +276,7 @@ class PayPalController extends Controller
             'ppCmid'        => bin2hex(random_bytes(16)),
             'ppSdkHost'     => $isSandbox ? 'https://www.sandbox.paypal.com' : 'https://www.paypal.com',
             'ppIsSandbox'   => $isSandbox,
+            'ppWalletsEnabled' => (bool) ($cfg['wallets_enabled'] ?? false),
         ]);
     }
 
