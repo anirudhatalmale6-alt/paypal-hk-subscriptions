@@ -64,8 +64,31 @@ class EloquentStore
         $data = $this->onlySubColumns($patch);
         unset($data['id']);
         if ($data) {
-            PaypalSubscription::whereKey($id)->update($data);
+            // A query-builder update() bypasses Eloquent casts, so coerce the values
+            // the engine emits as plain PHP (ISO-8601 date strings, JSON arrays) into
+            // the forms MySQL accepts. Model::create() (used on the create() path) does
+            // apply casts, so this is only needed here.
+            PaypalSubscription::whereKey($id)->update($this->coerceForDb($data));
         }
+    }
+
+    // Columns stored as MySQL DATETIME / JSON — normalised on the raw-update path.
+    private const DATE_COLUMNS = ['first_fail_at', 'next_billing_at', 'last_charge_at', 'cancelled_at', 'activated_at'];
+    private const JSON_COLUMNS = ['acquisition', 'last_recovery'];
+
+    private function coerceForDb(array $data): array
+    {
+        foreach (self::DATE_COLUMNS as $c) {
+            if (array_key_exists($c, $data) && is_string($data[$c]) && $data[$c] !== '') {
+                $data[$c] = Carbon::parse($data[$c])->format('Y-m-d H:i:s');
+            }
+        }
+        foreach (self::JSON_COLUMNS as $c) {
+            if (array_key_exists($c, $data) && (is_array($data[$c]) || is_object($data[$c]))) {
+                $data[$c] = json_encode($data[$c]);
+            }
+        }
+        return $data;
     }
 
     public function appendCharge(string $id, array $charge): void

@@ -216,6 +216,37 @@ class PayPalController extends Controller
         return response()->json(['ok' => $res['status'] < 300, 'status' => $res['status']]);
     }
 
+    /**
+     * Self-contained hosted-card-fields checkout page used to validate the whole
+     * flow end-to-end against PayPal sandbox. Renders ONLY while the module points
+     * at sandbox (api_base contains "sandbox") and 404s on live, so it can never be
+     * reached in production. The real checkout UI lives on your own page and reuses
+     * the same JSON endpoints.
+     */
+    public function sandboxPage(Request $request)
+    {
+        if (strpos($this->cfg['api_base'] ?? '', 'sandbox') === false) {
+            abort(404);
+        }
+        $cfg         = $this->cfg;
+        $clientId    = $cfg['client_id'];
+        $currency    = $cfg['currency'];
+        $isSandbox   = true;
+        $sdkHost     = 'https://www.sandbox.paypal.com';
+        $cmid        = bin2hex(random_bytes(16));
+        $clientToken = '';
+        try {
+            $domains     = array_filter(array_map('trim', explode(',', $cfg['sdk_domains'] ?? '')));
+            $clientToken = (string) (new PayPalClient($cfg))->browserClientToken($domains);
+        } catch (\Throwable $e) {
+            $clientToken = '';
+        }
+
+        ob_start();
+        include __DIR__ . '/../../PayPal/sandbox_checkout.php';
+        return response(ob_get_clean())->header('Content-Type', 'text/html; charset=utf-8');
+    }
+
     /** Inbound PayPal webhook. Verify signature, dispatch, ack 200 fast. CSRF-exempt route. */
     public function webhook(Request $request): JsonResponse
     {
