@@ -310,3 +310,40 @@ are attributable in the PayPal dashboard too — not only in our store.
 segment, country, product or brand — into counts (active / past_due / cancelled
 / trials) and captured revenue by currency. That is the query the dashboard will
 sit on top of.
+
+## Dashboard-ready data model (LTV / retention / cohorts / churn)
+
+Beyond the segment dimensions, every subscription is stamped at creation with
+the metadata needed to compute the dashboard KPIs later — so the data model
+never has to be redesigned:
+
+- `customer_ref` — a stable customer key so a person's activity is groupable
+  across products/subscriptions. Prefers the app's authenticated user id
+  (`customer_id`, passed by the checkout), falls back to a hashed email.
+  This is the join key for **LTV** and **retention**.
+- `cohort` — signup month (`YYYY-MM`). The grouping key for **cohorts** and
+  retention curves.
+- `acquisition` — first-touch attribution: `source`, `medium`, `campaign`,
+  `content`, `term`, `gclid`, `fbclid`, `referrer`, `landing_page`, plus a coarse
+  `channel` bucket (google / meta / microsoft / tiktok / referral / organic /
+  direct). Flattened onto the record as `acq_source` / `acq_channel` /
+  `acq_medium` for direct grouping. Captured by `src/Attribution.php`; the
+  checkout persists FIRST-touch UTMs (see `getAttribution()` in the demo page).
+- `activated_at`, `created_at`, `cancelled_at`, per-charge `at` timestamps —
+  the lifecycle timeline that **churn** and retention are derived from.
+
+Break-down dimensions available on every record: **country**, **product/niche**,
+**brand**, **acquisition source/channel/medium**, **cohort**.
+
+Query primitives (in `src/Store.php`, the base tables the dashboard reads):
+- `metricsBySegment($groupBy)` — counts + revenue grouped by segment / country /
+  product / brand / acq_channel / any stamped field.
+- `customerLtv()` — per-customer gross revenue (LTV), product count, active
+  count, first/last seen, cohort, acquisition channel.
+- `cohorts($dimension)` — per signup-cohort customers / active / churned /
+  retention rate / revenue, optionally split by a second dimension (country /
+  product / acq_channel).
+
+Best-practice note for the live integration: the Laravel checkout should pass
+`customer_id` (the logged-in user id) and the first-touch `attribution` object on
+subscribe. Everything else is derived server-side.

@@ -13,6 +13,7 @@ require __DIR__ . '/../src/WebhookHandler.php';
 require __DIR__ . '/../src/ResponseCodes.php';
 require __DIR__ . '/../src/VaultRecurring.php';
 require __DIR__ . '/../src/Segments.php';
+require __DIR__ . '/../src/Attribution.php';
 require __DIR__ . '/../src/Store.php';
 
 use PayPalHK\PayPalClient;
@@ -22,6 +23,7 @@ use PayPalHK\WebhookHandler;
 use PayPalHK\ResponseCodes;
 use PayPalHK\VaultRecurring;
 use PayPalHK\Segments;
+use PayPalHK\Attribution;
 use PayPalHK\Store;
 use PayPalHK\PayPalException;
 
@@ -51,6 +53,33 @@ $MAX_TRIALS_PER_CARD = 2;
 $resolveSegment = static function (array $in): array {
     $code = $in['segment'] ?? ($_GET['segment'] ?? null);
     return Segments::resolve(is_string($code) ? $code : null);
+};
+
+// Stable customer key so LTV / retention / cohorts / churn can group a person's
+// activity across multiple products and subscriptions. Prefer the client app's
+// authenticated user id (customer_id) — the most reliable key; fall back to a
+// hashed email. Prefixed so the two key spaces never collide.
+$customerRef = static function (?string $customerId, ?string $email): ?string {
+    if (is_string($customerId) && $customerId !== '') return 'u:' . substr(hash('sha256', $customerId), 0, 24);
+    if (is_string($email) && trim($email) !== '')      return 'e:' . substr(hash('sha256', strtolower(trim($email))), 0, 24);
+    return null;
+};
+
+// The analytics metadata stamped on every subscription so the future dashboard
+// can compute LTV / retention / cohorts / churn broken down by country, product
+// and acquisition source — captured from day one, no data-model redesign later.
+$analyticsMeta = static function (array $in, ?string $email, int $now) use ($customerRef): array {
+    $cid = (isset($in['customer_id']) && is_string($in['customer_id']) && $in['customer_id'] !== '') ? $in['customer_id'] : null;
+    $acq = Attribution::fromInput($in);
+    return [
+        'customer_id'  => $cid,
+        'customer_ref' => $customerRef($cid, $email),
+        'cohort'       => date('Y-m', $now),   // signup month, for cohort/retention
+        'acquisition'  => $acq,                 // full first-touch attribution
+        'acq_source'   => $acq['source'],       // flattened for direct grouping
+        'acq_channel'  => $acq['channel'],
+        'acq_medium'   => $acq['medium'],
+    ];
 };
 
 /** Stable, non-reversible fingerprint of a card from its vault metadata. */
@@ -186,6 +215,9 @@ try {
                     'decline' => $charge['decline_detail'], 'debug_id' => $charge['debug_id'], 'at' => date('c', $now),
                 ]],
             ];
+            // Identity + cohort + acquisition metadata for the dashboard.
+            $sub = array_merge($sub, $analyticsMeta($in, $email, $now));
+            if ($charge['ok']) $sub['activated_at'] = date('c', $now);
             $store->create($sub);
 
             if (!$charge['ok']) {
@@ -313,6 +345,10 @@ try {
                     'decline' => $cap['decline_detail'], 'debug_id' => $cap['debug_id'], 'at' => date('c', $now),
                 ]],
             ];
+            // Identity + cohort + acquisition metadata for the dashboard (wallet
+            // path uses the PayPal-supplied email when the app didn't pass one).
+            $sub = array_merge($sub, $analyticsMeta($in, $sub['email'], $now));
+            $sub['activated_at'] = date('c', $now);
             $store->create($sub);
             echo json_encode([
                 'subscription_id'   => $subId,

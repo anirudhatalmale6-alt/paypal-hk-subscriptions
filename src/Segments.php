@@ -38,15 +38,21 @@ final class Segments
                 'trial_amount'    => '2.90',
                 'monthly_amount'  => '49.50',
                 'trial_hours'     => 48,
-                // Shown on the customer's bank statement (<= 22 chars). Replace
-                // with the exact descriptor the client registers with PayPal.
-                'soft_descriptor' => 'SMARTLOOKUP FR',
+                // Shown on the customer's bank statement (<= 22 chars). Client
+                // uses SMARTLOOKUP for all TheSmartLookup products (brand-level).
+                'soft_descriptor' => 'SMARTLOOKUP',
             ],
 
-            // --- Ready to switch on as we expand (kept here to make the
-            // country/product/brand separation explicit and copy-ready) ---
-            // 'uk-vehicle-history-report' => [ 'country'=>'GB','currency'=>'GBP', ... ],
-            // 'au-vehicle-history-report' => [ 'country'=>'AU','currency'=>'AUD', ... ],
+            // --- Ready to switch on as we expand. Same website / brand /
+            // descriptor (SMARTLOOKUP), one entry per product x country, each
+            // with its own confirmed price. The data model already separates by
+            // product, so metrics stay clean regardless of how many launch: ---
+            // 'fr-people-lookup'         => [ 'product'=>'people-lookup',        'country'=>'FR', ... ],
+            // 'fr-reverse-phone-lookup'  => [ 'product'=>'reverse-phone-lookup', 'country'=>'FR', ... ],
+            // 'fr-ai-tools'              => [ 'product'=>'ai-tools',             'country'=>'FR', ... ],
+            // 'uk-vehicle-history-report'=> [ 'country'=>'GB','currency'=>'GBP', ... ],
+            // 'au-vehicle-history-report'=> [ 'country'=>'AU','currency'=>'AUD', ... ],
+            //
             // A different brand (e.g. Globalrecharge) runs on its OWN PayPal REST
             // app / webhook / descriptor; give it its own config array + segments
             // so no transaction or metric can ever be mixed with TheSmartLookup.

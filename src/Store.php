@@ -196,6 +196,95 @@ class Store
         return array_values($rows);
     }
 
+    /**
+     * Lifetime value per customer. Groups every subscription by customer_ref
+     * (stable across products) and sums captured revenue, so LTV = gross_revenue
+     * per customer. Also surfaces first/last activity, the acquisition channel
+     * and the signup cohort — everything the dashboard needs to break LTV down
+     * by country / product / acquisition source.
+     */
+    public function customerLtv(): array
+    {
+        $rows = [];
+        foreach ($this->read()['subscriptions'] as $s) {
+            $key = $s['customer_ref'] ?? ('anon:' . ($s['id'] ?? ''));
+            if (!isset($rows[$key])) {
+                $rows[$key] = [
+                    'customer_ref' => $key,
+                    'email'        => $s['email'] ?? null,
+                    'cohort'       => $s['cohort'] ?? null,
+                    'country'      => $s['country'] ?? null,
+                    'acq_channel'  => $s['acq_channel'] ?? null,
+                    'acq_source'   => $s['acq_source'] ?? null,
+                    'subscriptions'=> 0,
+                    'active'       => 0,
+                    'products'     => [],
+                    'first_seen'   => $s['created_at'] ?? null,
+                    'last_seen'    => $s['created_at'] ?? null,
+                    'gross_revenue'=> [],   // currency => captured total (the LTV)
+                ];
+            }
+            $r = &$rows[$key];
+            $r['subscriptions']++;
+            if (($s['status'] ?? '') === 'active') $r['active']++;
+            if (!empty($s['product']) && !in_array($s['product'], $r['products'], true)) $r['products'][] = $s['product'];
+            $created = $s['created_at'] ?? null;
+            if ($created && (!$r['first_seen'] || $created < $r['first_seen'])) $r['first_seen'] = $created;
+            if ($created && (!$r['last_seen']  || $created > $r['last_seen']))  $r['last_seen']  = $created;
+            $cur = $s['currency'] ?? 'EUR';
+            foreach (($s['charges'] ?? []) as $c) {
+                if (!empty($c['ok'])) {
+                    $r['gross_revenue'][$cur] = round(($r['gross_revenue'][$cur] ?? 0) + (float) ($c['amount'] ?? 0), 2);
+                }
+            }
+            unset($r);
+        }
+        return array_values($rows);
+    }
+
+    /**
+     * Cohort roll-up for retention / churn analysis. Groups customers by signup
+     * cohort (month) and, optionally, a second dimension (country / product /
+     * acq_channel). Per cohort: customers, still-active, churned, retention rate,
+     * and captured revenue by currency. This is the base table the dashboard's
+     * cohort/retention grid sits on.
+     */
+    public function cohorts(?string $dimension = null): array
+    {
+        $rows = [];
+        foreach ($this->read()['subscriptions'] as $s) {
+            $cohort = $s['cohort'] ?? 'unknown';
+            $dim    = $dimension ? ($s[$dimension] ?? 'unknown') : null;
+            $key    = $cohort . '|' . ($dim ?? '');
+            if (!isset($rows[$key])) {
+                $rows[$key] = [
+                    'cohort'    => $cohort,
+                    'dimension' => $dimension,
+                    'value'     => $dim,
+                    'customers' => 0,
+                    'active'    => 0,
+                    'churned'   => 0,
+                    'retention' => 0.0,
+                    'revenue'   => [],
+                ];
+            }
+            $r = &$rows[$key];
+            $r['customers']++;
+            $status = $s['status'] ?? '';
+            if ($status === 'active')                          $r['active']++;
+            if (in_array($status, ['cancelled', 'canceled'], true)) $r['churned']++;
+            $cur = $s['currency'] ?? 'EUR';
+            foreach (($s['charges'] ?? []) as $c) {
+                if (!empty($c['ok'])) $r['revenue'][$cur] = round(($r['revenue'][$cur] ?? 0) + (float) ($c['amount'] ?? 0), 2);
+            }
+            unset($r);
+        }
+        foreach ($rows as &$r) {
+            $r['retention'] = $r['customers'] > 0 ? round($r['active'] / $r['customers'], 4) : 0.0;
+        }
+        return array_values($rows);
+    }
+
     /** Subscriptions whose next charge is due (active or in dunning). */
     public function due(int $nowTs): array
     {

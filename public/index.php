@@ -138,6 +138,34 @@ var btn = document.getElementById('pay-btn');
 var msg = document.getElementById('msg');
 var cardSession = null;
 
+// First-touch acquisition attribution. Reads UTM params + ad click ids from the
+// URL and persists the FIRST landing's values (so a later organic/direct visit
+// doesn't overwrite the channel that actually acquired the customer). Sent as
+// `attribution` on subscribe so the dashboard can break LTV/retention/churn down
+// by acquisition source. Your Laravel checkout can reuse this verbatim; also
+// pass `customer_id` (the logged-in user id) for the most reliable LTV key.
+function getAttribution() {
+  var KEY = 'sl_first_touch';
+  try {
+    var stored = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (stored) return stored;
+  } catch (e) {}
+  var q = new URLSearchParams(location.search);
+  var a = {
+    source:   q.get('utm_source'),
+    medium:   q.get('utm_medium'),
+    campaign: q.get('utm_campaign'),
+    content:  q.get('utm_content'),
+    term:     q.get('utm_term'),
+    gclid:    q.get('gclid'),
+    fbclid:   q.get('fbclid'),
+    referrer: document.referrer || null,
+    landing_page: location.href
+  };
+  try { localStorage.setItem(KEY, JSON.stringify(a)); } catch (e) {}
+  return a;
+}
+
 function show(type, text) { msg.className = 'msg ' + type; msg.textContent = text; }
 
 function showActive(fin) {
@@ -199,7 +227,7 @@ async function initWallets() {
 function createWalletOrder(method) {
   return fetch('api.php?action=create-wallet-order', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method: method, return_url: location.href, cancel_url: location.href, brand_name: 'TheSmartLookup' })
+    body: JSON.stringify({ method: method, return_url: location.href, cancel_url: location.href, brand_name: 'TheSmartLookup', attribution: getAttribution() })
   }).then(function (r) { return r.json(); }).then(function (d) {
     if (!d.order_id) throw new Error(d.error || 'could not create order');
     return { orderId: d.order_id };
@@ -210,7 +238,7 @@ async function captureWallet(orderId) {
   show('', '');
   var r = await fetch('api.php?action=capture-order', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ order_id: orderId })
+    body: JSON.stringify({ order_id: orderId, attribution: getAttribution() })
   });
   var fin = await r.json();
   if (!r.ok || fin.error) { show('err', fin.message || fin.error || 'Payment failed'); return; }
@@ -283,7 +311,7 @@ async function pay() {
     var finRes = await fetch('api.php?action=finalize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ setup_token: st.id, cmid: CMID })
+      body: JSON.stringify({ setup_token: st.id, cmid: CMID, attribution: getAttribution() })
     });
     var fin = await finRes.json();
     if (!finRes.ok || fin.error) throw new Error(fin.message || fin.error || 'Payment failed');
