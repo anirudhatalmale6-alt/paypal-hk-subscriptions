@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\SubscriptionModel;
+use App\Models\User;
 use App\PayPal\EloquentStore;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -87,6 +89,7 @@ class PayPalController extends Controller
             'description' => Segments::label($seg) . ' - 48h trial', 'custom_id' => $subId,
             'segment' => $seg['code'], 'soft_descriptor' => $seg['soft_descriptor'] ?? null,
             'request_id' => 'trial-' . substr(hash('sha256', $setupTokenId), 0, 24),
+            'cmid' => (isset($in['cmid']) && is_string($in['cmid'])) ? $in['cmid'] : null,
         ]);
         $cls = ResponseCodes::classify($charge['response_code']);
 
@@ -131,6 +134,7 @@ class PayPalController extends Controller
             'segment' => $seg['code'], 'soft_descriptor' => $seg['soft_descriptor'] ?? null,
             'return_url' => $in['return_url'] ?? '', 'cancel_url' => $in['cancel_url'] ?? '',
             'brand_name' => $in['brand_name'] ?? Segments::label($seg),
+            'cmid' => (isset($in['cmid']) && is_string($in['cmid'])) ? $in['cmid'] : null,
         ]);
         if ($res['status'] >= 400) {
             return response()->json(['error' => 'order create failed', 'debug_id' => $res['debugId'], 'detail' => $res['body']], $res['status']);
@@ -245,6 +249,49 @@ class PayPalController extends Controller
         ob_start();
         include __DIR__ . '/../../PayPal/sandbox_checkout.php';
         return response(ob_get_clean())->header('Content-Type', 'text/html; charset=utf-8');
+    }
+
+    /**
+     * Live checkout page (FR vehicle-history report). Same design as the existing
+     * Stripe checkout, but the card fields + Apple Pay / PayPal buttons are PayPal's.
+     * On a successful charge the browser hands off to the existing provisioning
+     * controller (paiement.controller) so the account + welcome email are created
+     * exactly as before. Renders in both sandbox and live (the SDK host follows env).
+     */
+    public function checkoutRapportAutoPaypal(Request $request)
+    {
+        $cfg = $this->cfg;
+        $isSandbox = strpos($cfg['api_base'] ?? '', 'sandbox') !== false;
+        $clientToken = '';
+        try {
+            $domains = array_filter(array_map('trim', explode(',', $cfg['sdk_domains'] ?? '')));
+            $clientToken = (string) (new PayPalClient($cfg))->browserClientToken($domains);
+        } catch (\Throwable $e) {
+            $clientToken = '';
+        }
+        return view('FR.checkoutRapportAutoPaypal', [
+            'ppClientId'    => $cfg['client_id'],
+            'ppClientToken' => $clientToken,
+            'ppCurrency'    => $cfg['currency'],
+            'ppCmid'        => bin2hex(random_bytes(16)),
+            'ppSdkHost'     => $isSandbox ? 'https://www.sandbox.paypal.com' : 'https://www.paypal.com',
+            'ppIsSandbox'   => $isSandbox,
+        ]);
+    }
+
+    /**
+     * Pre-flight email check used by the checkout before charging, so we never take
+     * money for an email the provisioning step (CreateUser) would reject. Mirrors the
+     * effective rule there: a brand-new email is available.
+     */
+    public function precheckEmail(Request $request): JsonResponse
+    {
+        $email = trim((string) $request->query('email', ''));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return response()->json(['available' => false, 'reason' => 'invalid']);
+        }
+        $exists = User::where('email', $email)->exists();
+        return response()->json(['available' => !$exists]);
     }
 
     /** Inbound PayPal webhook. Verify signature, dispatch, ack 200 fast. CSRF-exempt route. */

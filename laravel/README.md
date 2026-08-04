@@ -119,10 +119,33 @@ by Country, Product/Niche and Acquisition source without any later re-modelling.
 3. Create a **live** webhook for `https://thesmartlookup.com/paypal/webhook`
    (same events) and set `PAYPAL_WEBHOOK_ID`.
 4. `php artisan config:clear`.
-5. Wire the PayPal card fields + wallet buttons into `/fr/checkout/rapport-auto`
-   (copy from `app/PayPal/sandbox_checkout.php`; point the `fetch()` calls at the
-   `/paypal/*` routes).
+5. The live checkout page is already wired — see below.
 6. `/paypal/sandbox` automatically 404s once you are on live credentials.
+
+## Live checkout page (FR vehicle-history report)
+
+Route `GET /fr/checkout/rapport-auto/paypal` →
+`PayPalController::checkoutRapportAutoPaypal` → view
+`resources/views/FR/checkoutRapportAutoPaypal.blade.php`. It is a copy of the
+existing Stripe checkout design with the card inputs replaced by PayPal hosted
+fields and Apple Pay / PayPal buttons added; the existing Stripe page
+(`/fr/checkout/rapport-auto`) is untouched. To promote PayPal to the main URL,
+point that route's view at this controller — one line.
+
+Flow: pre-check email (`/paypal/precheck-email`) → vault + charge €2.90 via
+`/paypal/*` → on success the browser submits the existing provisioning form
+(`paiement.controller`), so the account + welcome email + login are created
+exactly as before. The card metadata id (Fraudnet CMID) is forwarded to the
+charge for cross-border acceptance.
+
+See `documentation/PAYPAL_OPTIMIZATIONS.md` for the full acceptance/optimization
+reference.
+
+**Next step (access continuity):** the app's own `SubscriptionModel` is created
+with a 48h window by the provisioning controller. To keep access in sync with
+real PayPal billing, extend that row when `paypal:run-billing` charges a renewal
+(and flip it off on suspend/cancel). Hook point: `RunBillingCommand` after a
+successful/failed cycle, matched to the app user by email.
 
 ## Validated (sandbox, on this server)
 - `POST /paypal/create-setup-token` → real setup token

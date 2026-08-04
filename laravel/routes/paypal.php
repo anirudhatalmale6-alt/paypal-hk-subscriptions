@@ -21,6 +21,8 @@ Route::prefix('paypal')->name('paypal.')->group(function () {
     Route::post('capture-order',       [PayPalController::class, 'captureOrder'])->name('capture-order');
     Route::get('subscription',         [PayPalController::class, 'show'])->name('show');
     Route::post('cancel',              [PayPalController::class, 'cancel'])->name('cancel');
+    // Pre-flight email availability check (called before charging).
+    Route::get('precheck-email',       [PayPalController::class, 'precheckEmail'])->name('precheck-email');
 
     // Self-contained hosted-card-fields checkout page, used to validate the full
     // flow end-to-end. It only renders while the module is pointed at PayPal

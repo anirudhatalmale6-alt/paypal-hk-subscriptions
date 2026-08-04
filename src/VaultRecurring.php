@@ -75,6 +75,19 @@ class VaultRecurring
         if (!empty($meta['segment']))         $pu['reference_id']    = $meta['segment'];
         if (!empty($meta['soft_descriptor'])) $pu['soft_descriptor'] = substr($meta['soft_descriptor'], 0, 22);
 
+        $headers = [
+            'Prefer: return=representation',
+            // A stable request id can be supplied (e.g. derived from the setup
+            // token) so a double-submit is de-duplicated by PayPal and never
+            // charges twice; otherwise a fresh id is used per call.
+            'PayPal-Request-Id: ' . ($meta['request_id'] ?? 'ord-' . bin2hex(random_bytes(8))),
+        ];
+        // Fraudnet device correlation: forwarding the browser's client-metadata-id
+        // ties the on-page Data Collector telemetry to this charge, which materially
+        // lifts cross-border card acceptance. Only meaningful on the FIRST (customer-
+        // initiated) charge, where the browser session exists; harmless otherwise.
+        if (!empty($meta['cmid'])) $headers[] = 'PayPal-Client-Metadata-Id: ' . $meta['cmid'];
+
         $res = $this->client->request('POST', '/v2/checkout/orders', [
             'intent' => 'CAPTURE',
             'purchase_units' => [$pu],
@@ -82,13 +95,7 @@ class VaultRecurring
                 'vault_id'          => $vaultId,
                 'stored_credential' => $stored,
             ]],
-        ], [
-            'Prefer: return=representation',
-            // A stable request id can be supplied (e.g. derived from the setup
-            // token) so a double-submit is de-duplicated by PayPal and never
-            // charges twice; otherwise a fresh id is used per call.
-            'PayPal-Request-Id: ' . ($meta['request_id'] ?? 'ord-' . bin2hex(random_bytes(8))),
-        ]);
+        ], $headers);
 
         return $this->normaliseCapture($res);
     }
@@ -133,11 +140,14 @@ class VaultRecurring
         if (!empty($ctx['segment']))         $pu['reference_id']    = $ctx['segment'];
         if (!empty($ctx['soft_descriptor'])) $pu['soft_descriptor'] = substr($ctx['soft_descriptor'], 0, 22);
 
+        $headers = ['Prefer: return=representation', 'PayPal-Request-Id: vo-' . bin2hex(random_bytes(8))];
+        if (!empty($ctx['cmid'])) $headers[] = 'PayPal-Client-Metadata-Id: ' . $ctx['cmid'];
+
         return $this->client->request('POST', '/v2/checkout/orders', [
             'intent' => 'CAPTURE',
             'purchase_units' => [$pu],
             'payment_source' => [$method => $source],
-        ], ['Prefer: return=representation', 'PayPal-Request-Id: vo-' . bin2hex(random_bytes(8))]);
+        ], $headers);
     }
 
     /** Capture an approved order (the trial) and surface the vaulted token id. */
