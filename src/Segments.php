@@ -39,8 +39,8 @@ final class Segments
                 'monthly_amount'  => '49.50',
                 'trial_hours'     => 48,
                 // Shown on the customer's bank statement (<= 22 chars). Client
-                // uses SMARTLOOKUP for all TheSmartLookup products (brand-level).
-                'soft_descriptor' => 'SMARTLOOKUP',
+                // uses Thesmartlookup for all TheSmartLookup products (brand-level).
+                'soft_descriptor' => 'Thesmartlookup',
             ],
 
             // --- Ready to switch on as we expand. Same website / brand /
