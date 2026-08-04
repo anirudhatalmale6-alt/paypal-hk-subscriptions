@@ -12,6 +12,7 @@ require __DIR__ . '/../src/WebhookVerifier.php';
 require __DIR__ . '/../src/WebhookHandler.php';
 require __DIR__ . '/../src/ResponseCodes.php';
 require __DIR__ . '/../src/VaultRecurring.php';
+require __DIR__ . '/../src/Segments.php';
 require __DIR__ . '/../src/Store.php';
 
 use PayPalHK\PayPalClient;
@@ -20,6 +21,7 @@ use PayPalHK\WebhookVerifier;
 use PayPalHK\WebhookHandler;
 use PayPalHK\ResponseCodes;
 use PayPalHK\VaultRecurring;
+use PayPalHK\Segments;
 use PayPalHK\Store;
 use PayPalHK\PayPalException;
 
@@ -38,14 +40,18 @@ $vault   = new VaultRecurring($client);
 $store   = new Store(__DIR__ . '/../storage/subscriptions.json');
 $action  = $_GET['action'] ?? '';
 
-// Plan figures (would come from config/DB in the Laravel app)
-$TRIAL_AMOUNT   = '2.90';   // vehicle report price that starts the 48h trial
-$MONTHLY_AMOUNT = '49.50';
-$CURRENCY       = $cfg['currency'];
-$TRIAL_HOURS    = 48;
 // Anti-abuse: a single card may start at most this many trials. Beyond it, the
 // trial-to-subscription flow is blocked for that card.
 $MAX_TRIALS_PER_CARD = 2;
+
+// Resolve the market/product/brand segment for this request. Price points,
+// currency, trial length, labels and the statement descriptor all come from the
+// segment, so a new market is one registry entry (see src/Segments.php). Defaults
+// to FR Vehicle History Report. Callers may pass ?segment= or {"segment":...}.
+$resolveSegment = static function (array $in): array {
+    $code = $in['segment'] ?? ($_GET['segment'] ?? null);
+    return Segments::resolve(is_string($code) ? $code : null);
+};
 
 /** Stable, non-reversible fingerprint of a card from its vault metadata. */
 $cardFingerprint = static function (array $card): string {
@@ -83,6 +89,13 @@ try {
                 break;
             }
 
+            // Market/product/brand segment drives price, currency and descriptor.
+            $seg            = $resolveSegment($in);
+            $TRIAL_AMOUNT   = $seg['trial_amount'];
+            $MONTHLY_AMOUNT = $seg['monthly_amount'];
+            $CURRENCY       = $seg['currency'];
+            $TRIAL_HOURS    = $seg['trial_hours'];
+
             // --- Idempotency (point #5): if this setup token was already
             // finalized, return the existing subscription instead of charging
             // again (guards against double-submit / browser retry). ---
@@ -90,6 +103,7 @@ try {
                 echo json_encode([
                     'subscription_id' => $existing['id'],
                     'status'          => $existing['status'],
+                    'segment'         => $existing['segment'] ?? $seg['code'],
                     'trial_charged'   => $TRIAL_AMOUNT . ' ' . $CURRENCY,
                     'next_billing'    => $existing['next_billing_at'],
                     'monthly'         => $MONTHLY_AMOUNT . ' ' . $CURRENCY,
@@ -133,9 +147,11 @@ try {
             // Stable request id => PayPal de-dupes a concurrent double-submit.
             $subId = 'sub_' . bin2hex(random_bytes(6));
             $charge = $vault->charge($vaultId, $TRIAL_AMOUNT, $CURRENCY, 'FIRST', [
-                'description' => '48h trial',
-                'custom_id'   => $subId,
-                'request_id'  => 'trial-' . substr(hash('sha256', $setupTokenId), 0, 24),
+                'description'     => Segments::label($seg) . ' - 48h trial',
+                'custom_id'       => $subId,
+                'segment'         => $seg['code'],
+                'soft_descriptor' => $seg['soft_descriptor'] ?? null,
+                'request_id'      => 'trial-' . substr(hash('sha256', $setupTokenId), 0, 24),
             ]);
             $cls = ResponseCodes::classify($charge['response_code']);
 
@@ -151,6 +167,14 @@ try {
                 'email'           => $email,
                 'currency'        => $CURRENCY,
                 'monthly_amount'  => $MONTHLY_AMOUNT,
+                // Analytics dimensions: country / product / brand kept separate
+                // from the start for clean per-market dashboard metrics.
+                'segment'         => $seg['code'],
+                'country'         => $seg['country'],
+                'product'         => $seg['product'],
+                'brand'           => $seg['brand'],
+                'product_label'   => $seg['label'],
+                'soft_descriptor' => $seg['soft_descriptor'] ?? null,
                 'status'          => $charge['ok'] ? 'active' : 'payment_failed',
                 'created_at'      => date('c', $now),
                 // After the 48h trial, first monthly charge is due.
@@ -172,6 +196,7 @@ try {
             echo json_encode([
                 'subscription_id'   => $subId,          // OUR internal record id
                 'status'            => 'active',
+                'segment'           => $seg['code'],
                 'trial_charged'     => $TRIAL_AMOUNT . ' ' . $CURRENCY,
                 'next_billing'      => $sub['next_billing_at'],
                 'monthly'           => $MONTHLY_AMOUNT . ' ' . $CURRENCY,
@@ -189,14 +214,17 @@ try {
         // by our engine afterwards. ---
         case 'create-wallet-order':
             $in     = json_decode(file_get_contents('php://input'), true) ?: [];
+            $seg    = $resolveSegment($in);
             $method = ($in['method'] ?? 'paypal') === 'apple_pay' ? 'apple_pay' : 'paypal';
             $subId  = 'sub_' . bin2hex(random_bytes(6)); // carried via custom_id
-            $res = $vault->createOrderWithVault($TRIAL_AMOUNT, $CURRENCY, $method, [
-                'custom_id'   => $subId,
-                'description' => '48h trial',
-                'return_url'  => $in['return_url'] ?? '',
-                'cancel_url'  => $in['cancel_url'] ?? '',
-                'brand_name'  => $in['brand_name'] ?? 'Membership',
+            $res = $vault->createOrderWithVault($seg['trial_amount'], $seg['currency'], $method, [
+                'custom_id'       => $subId,
+                'description'     => Segments::label($seg) . ' - 48h trial',
+                'segment'         => $seg['code'],           // read back at capture
+                'soft_descriptor' => $seg['soft_descriptor'] ?? null,
+                'return_url'      => $in['return_url'] ?? '',
+                'cancel_url'      => $in['cancel_url'] ?? '',
+                'brand_name'      => $in['brand_name'] ?? Segments::label($seg),
             ]);
             if ($res['status'] >= 400) {
                 http_response_code($res['status']);
@@ -226,6 +254,12 @@ try {
             $vaultId    = $cap['vault_id'];
             $sourceType = $cap['source_type'] ?? 'card';
             $psource    = $cap['raw']['payment_source'] ?? [];
+
+            // Segment travels on the order's reference_id (set at create time),
+            // so the market/product/brand is resolved authoritatively here even
+            // without trusting the client to resend it.
+            $refSeg = $cap['raw']['purchase_units'][0]['reference_id'] ?? null;
+            $seg    = Segments::resolve(is_string($refSeg) ? $refSeg : ($in['segment'] ?? null));
 
             // Fingerprint for the per-account trial cap: card meta for a saved
             // card/Apple Pay, payer identity for a saved PayPal wallet.
@@ -261,13 +295,19 @@ try {
                 'card_last4'      => $last4,
                 'card_brand'      => $brand,
                 'email'           => $psource['paypal']['email_address'] ?? ($in['email'] ?? null),
-                'currency'        => $CURRENCY,
-                'monthly_amount'  => $MONTHLY_AMOUNT,
+                'currency'        => $seg['currency'],
+                'monthly_amount'  => $seg['monthly_amount'],
+                'segment'         => $seg['code'],
+                'country'         => $seg['country'],
+                'product'         => $seg['product'],
+                'brand'           => $seg['brand'],
+                'product_label'   => $seg['label'],
+                'soft_descriptor' => $seg['soft_descriptor'] ?? null,
                 'status'          => 'active',
                 'created_at'      => date('c', $now),
-                'next_billing_at' => date('c', $now + $TRIAL_HOURS * 3600),
+                'next_billing_at' => date('c', $now + $seg['trial_hours'] * 3600),
                 'charges'         => [[
-                    'type' => 'trial', 'amount' => $TRIAL_AMOUNT, 'ok' => true,
+                    'type' => 'trial', 'amount' => $seg['trial_amount'], 'ok' => true,
                     'capture_id' => $cap['capture_id'], 'response_code' => $cap['response_code'],
                     'response_label' => $cls['label'], 'category' => $cls['category'], 'retryable' => $cls['retryable'],
                     'decline' => $cap['decline_detail'], 'debug_id' => $cap['debug_id'], 'at' => date('c', $now),
@@ -277,9 +317,10 @@ try {
             echo json_encode([
                 'subscription_id'   => $subId,
                 'status'            => 'active',
-                'trial_charged'     => $TRIAL_AMOUNT . ' ' . $CURRENCY,
+                'segment'           => $seg['code'],
+                'trial_charged'     => $seg['trial_amount'] . ' ' . $seg['currency'],
                 'next_billing'      => $sub['next_billing_at'],
-                'monthly'           => $MONTHLY_AMOUNT . ' ' . $CURRENCY,
+                'monthly'           => $seg['monthly_amount'] . ' ' . $seg['currency'],
                 'method'            => $sourceType,
                 'paypal_capture_id' => $cap['capture_id'],
                 'paypal_order_id'   => $orderId,

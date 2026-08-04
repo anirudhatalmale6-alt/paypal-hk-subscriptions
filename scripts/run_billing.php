@@ -50,8 +50,10 @@ foreach ($due as $sub) {
     $amount = RetryPolicy::chargeAmount($sub);
 
     $res = $vault->charge($sub['vault_id'], $amount, $sub['currency'], 'MIT', [
-        'custom_id'   => $sub['id'],
-        'description' => 'Monthly membership',
+        'custom_id'       => $sub['id'],
+        'description'     => ($sub['product_label'] ?? 'Membership') . ' - monthly',
+        'segment'         => $sub['segment'] ?? null,
+        'soft_descriptor' => $sub['soft_descriptor'] ?? null,
     ], $sub['source_type'] ?? 'card');
     $res['amount'] = $amount;
 

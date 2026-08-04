@@ -282,3 +282,31 @@ All confirmed with live sandbox API calls on 2026-08-02:
 - Two consecutive MIT recurring charges (€49.50) `COMPLETED`.
 - Scheduler run: due subscription charged (`capture 8R95…`), status `active`,
   `next_billing_at` advanced one month.
+
+## Market / product / brand segmentation
+
+Every payment, subscription, event and charge record is stamped at creation
+with four analytics dimensions so data stays cleanly separated from day one and
+the future metrics dashboard reads accurate per-market numbers with no
+back-filling:
+
+- `segment` — the market/product bundle code (e.g. `fr-vehicle-history-report`)
+- `country` — `FR`, `GB`, `AU`, …
+- `product` — the niche, e.g. `vehicle-history-report`
+- `brand`   — e.g. `thesmartlookup` (a sibling brand such as Globalrecharge runs
+  on its OWN PayPal REST app / webhook / descriptor — no data can be mixed)
+
+The registry lives in `src/Segments.php`. A segment also carries that market's
+price points, currency, trial length and bank-statement (soft) descriptor, so
+adding the UK or Australia — or a whole new niche — is a single registry entry;
+no code path changes. The first live segment is **FR Vehicle History Report**
+(`fr-vehicle-history-report`, EUR, €2.90 → €49.50), and it is the default.
+
+The tag also travels PayPal-side: the order's `reference_id` carries the segment
+code and `soft_descriptor` sets the per-market statement label, so transactions
+are attributable in the PayPal dashboard too — not only in our store.
+
+`Store::metricsBySegment($groupBy)` rolls these up on demand — grouped by
+segment, country, product or brand — into counts (active / past_due / cancelled
+/ trials) and captured revenue by currency. That is the query the dashboard will
+sit on top of.

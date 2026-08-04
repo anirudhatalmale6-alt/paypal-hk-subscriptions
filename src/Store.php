@@ -154,6 +154,48 @@ class Store
         return true;
     }
 
+    /**
+     * Roll up metrics grouped by market/product/brand segment. Because every
+     * record is stamped with segment/country/product/brand at creation, the
+     * dashboard can read accurate per-market numbers directly — no joins, no
+     * back-filling. Returns one row per segment with counts + captured revenue
+     * (by currency, since markets may differ). Grouping key is configurable so
+     * the same helper backs "by country", "by product", or "by brand" views.
+     */
+    public function metricsBySegment(string $groupBy = 'segment'): array
+    {
+        $rows = [];
+        foreach ($this->read()['subscriptions'] as $s) {
+            $key = $s[$groupBy] ?? 'unknown';
+            if (!isset($rows[$key])) {
+                $rows[$key] = [
+                    $groupBy    => $key,
+                    'country'   => $s['country'] ?? null,
+                    'product'   => $s['product'] ?? null,
+                    'brand'     => $s['brand'] ?? null,
+                    'total'     => 0,
+                    'active'    => 0,
+                    'past_due'  => 0,
+                    'cancelled' => 0,
+                    'trials'    => 0,
+                    'revenue'   => [],   // currency => captured amount
+                ];
+            }
+            $r = &$rows[$key];
+            $r['total']++;
+            $status = $s['status'] ?? '';
+            if (isset($r[$status])) $r[$status]++;
+            $cur = $s['currency'] ?? 'EUR';
+            foreach (($s['charges'] ?? []) as $c) {
+                if (empty($c['ok'])) continue;
+                if (($c['type'] ?? '') === 'trial') $r['trials']++;
+                $r['revenue'][$cur] = round(($r['revenue'][$cur] ?? 0) + (float) ($c['amount'] ?? 0), 2);
+            }
+            unset($r);
+        }
+        return array_values($rows);
+    }
+
     /** Subscriptions whose next charge is due (active or in dunning). */
     public function due(int $nowTs): array
     {

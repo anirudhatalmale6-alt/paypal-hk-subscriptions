@@ -64,13 +64,20 @@ class VaultRecurring
 
         $key = $sourceType === 'paypal' ? 'paypal' : 'card';
 
+        // Segment tag (country/product/brand) travels with the transaction so it
+        // is visible PayPal-side too: reference_id carries the segment code and
+        // soft_descriptor sets the bank-statement label for that market.
+        $pu = [
+            'amount'      => ['currency_code' => $currency, 'value' => $amount],
+            'custom_id'   => $meta['custom_id'] ?? null,
+            'description' => $meta['description'] ?? 'Membership',
+        ];
+        if (!empty($meta['segment']))         $pu['reference_id']    = $meta['segment'];
+        if (!empty($meta['soft_descriptor'])) $pu['soft_descriptor'] = substr($meta['soft_descriptor'], 0, 22);
+
         $res = $this->client->request('POST', '/v2/checkout/orders', [
             'intent' => 'CAPTURE',
-            'purchase_units' => [[
-                'amount'      => ['currency_code' => $currency, 'value' => $amount],
-                'custom_id'   => $meta['custom_id'] ?? null,
-                'description' => $meta['description'] ?? 'Membership',
-            ]],
+            'purchase_units' => [$pu],
             'payment_source' => [$key => [
                 'vault_id'          => $vaultId,
                 'stored_credential' => $stored,
@@ -115,13 +122,20 @@ class VaultRecurring
             ];
         }
 
+        // Same segment tagging as the card path: reference_id = segment code
+        // (read back at capture time to resolve the market), soft_descriptor =
+        // that market's bank-statement label.
+        $pu = [
+            'amount'      => ['currency_code' => $currency, 'value' => $amount],
+            'custom_id'   => $ctx['custom_id'] ?? null,
+            'description' => $ctx['description'] ?? '48h trial',
+        ];
+        if (!empty($ctx['segment']))         $pu['reference_id']    = $ctx['segment'];
+        if (!empty($ctx['soft_descriptor'])) $pu['soft_descriptor'] = substr($ctx['soft_descriptor'], 0, 22);
+
         return $this->client->request('POST', '/v2/checkout/orders', [
             'intent' => 'CAPTURE',
-            'purchase_units' => [[
-                'amount'      => ['currency_code' => $currency, 'value' => $amount],
-                'custom_id'   => $ctx['custom_id'] ?? null,
-                'description' => $ctx['description'] ?? '48h trial',
-            ]],
+            'purchase_units' => [$pu],
             'payment_source' => [$method => $source],
         ], ['Prefer: return=representation', 'PayPal-Request-Id: vo-' . bin2hex(random_bytes(8))]);
     }
